@@ -3,6 +3,21 @@ from datetime import datetime, timedelta
 
 import httpx
 
+from app.services.node_registry import marzban_provision_options
+from app.services.server_selector import VpnNode
+
+
+def _marzban_require_ok(response: httpx.Response) -> None:
+    if response.is_success:
+        return
+    try:
+        body = (response.text or "")[:4000]
+    except Exception:
+        body = "<no body>"
+    raise RuntimeError(
+        f"Marzban API {response.status_code} {response.request.method} {response.url}: {body}"
+    )
+
 
 @dataclass
 class ProvisionResult:
@@ -26,7 +41,7 @@ class MarzbanAdapter:
                 f"{self.panel_url}/api/admin/token",
                 data={"username": self.username, "password": self.password},
             )
-            response.raise_for_status()
+            _marzban_require_ok(response)
             data = response.json()
             token = data.get("access_token")
             if not token:
@@ -39,6 +54,7 @@ class MarzbanAdapter:
         tg_id: int,
         location_code: str,
         *,
+        node: VpnNode | None = None,
         days: int | None = None,
         hours: int | None = None,
     ) -> ProvisionResult:
@@ -51,15 +67,15 @@ class MarzbanAdapter:
         else:
             delta = timedelta(days=30)
         expire_at = int((datetime.utcnow() + delta).timestamp())
-        inbound_tag = f"loc-{location_code.lower()}"
+        inbound_tag, vless_settings = marzban_provision_options(node, location_code)
 
-        # Marzban UserCreate требует непустой proxies (см. validate_proxies в User).
+        # Marzban UserCreate: proxies не пустой; inbounds — теги как в панели (Core / Xray).
         payload = {
             "username": username,
             "status": "active",
             "expire": expire_at,
             "note": f"Telegram user {tg_id}",
-            "proxies": {"vless": {}},
+            "proxies": {"vless": vless_settings},
             "inbounds": {"vless": [inbound_tag]},
             "on_hold_timeout": 0,
             "on_hold_expire_duration": 0,
@@ -77,10 +93,10 @@ class MarzbanAdapter:
                     json=patch_payload,
                     headers=headers,
                 )
-                patch.raise_for_status()
+                _marzban_require_ok(patch)
                 user_data = patch.json()
             else:
-                response.raise_for_status()
+                _marzban_require_ok(response)
                 user_data = response.json()
 
         subscription_url = user_data.get("subscription_url", "")
@@ -102,7 +118,7 @@ class MarzbanAdapter:
                 json=payload,
                 headers=headers,
             )
-            response.raise_for_status()
+            _marzban_require_ok(response)
 
     async def disable_access(self, external_user_id: str) -> None:
         token = await self._get_token()
@@ -114,4 +130,4 @@ class MarzbanAdapter:
                 json=payload,
                 headers=headers,
             )
-            response.raise_for_status()
+            _marzban_require_ok(response)

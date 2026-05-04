@@ -177,6 +177,7 @@ async def callback_trial_location(call: CallbackQuery) -> None:
                 lambda: provider.provision_access(
                     call.from_user.id,
                     location_code,
+                    node=selected_node,
                     hours=settings.trial_hours,
                 ),
                 retries=settings.provision_retries,

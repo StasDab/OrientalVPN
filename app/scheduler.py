@@ -109,6 +109,7 @@ async def _process_provision_events(bot: Bot) -> None:
                     lambda: provider.provision_access(
                         tg_user_id,
                         location_code,
+                        node=node,
                         days=plan_days_val,
                     ),
                     retries=settings.provision_retries,

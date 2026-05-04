@@ -119,6 +119,7 @@ async def successful_payment(message: Message) -> None:
                 lambda: provider.provision_access(
                     buyer_tg_id,
                     location_code,
+                    node=selected_node,
                     days=plan_days_val,
                 ),
                 retries=settings.provision_retries,
