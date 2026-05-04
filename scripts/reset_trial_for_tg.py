@@ -38,11 +38,13 @@ def main() -> int:
     if not raw_url:
         print("Нет DATABASE_URL", file=sys.stderr)
         return 1
-    sync_url = raw_url.replace("postgresql+asyncpg", "postgresql+psycopg2", 1)
+    # psycopg2.connect принимает libpq URI только как postgresql://..., не postgresql+psycopg2://
+    dsn = raw_url.replace("postgresql+asyncpg", "postgresql", 1)
+    dsn = dsn.replace("postgresql+psycopg2", "postgresql", 1)
 
     import psycopg2
 
-    conn = psycopg2.connect(sync_url)
+    conn = psycopg2.connect(dsn)
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
