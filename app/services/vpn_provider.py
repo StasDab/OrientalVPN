@@ -4,6 +4,7 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 
+from app.datetime_util import naive_utc_from_timestamp, utc_timestamp_after
 from app.services.node_registry import marzban_provision_options
 from app.services.server_selector import VpnNode
 
@@ -138,7 +139,7 @@ class MarzbanAdapter:
             delta = timedelta(days=days)
         else:
             delta = timedelta(days=30)
-        expire_at = int((datetime.utcnow() + delta).timestamp())
+        expire_at = utc_timestamp_after(delta)
         inbound_tag, vless_settings = marzban_provision_options(node, location_code)
 
         # Marzban UserCreate: proxies не пустой; inbounds — теги как в панели (Core / Xray).
@@ -214,7 +215,7 @@ class MarzbanAdapter:
         return ProvisionResult(
             external_user_id=username,
             subscription_url=subscription_url,
-            ends_at=datetime.utcfromtimestamp(expire_at),
+            ends_at=naive_utc_from_timestamp(expire_at),
         )
 
     async def set_expire(self, external_user_id: str, expire_at_ts: int) -> None:

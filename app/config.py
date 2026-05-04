@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     panel_username: str = Field(alias="PANEL_USERNAME")
     panel_password: str = Field(alias="PANEL_PASSWORD")
 
-    trial_hours: int = Field(default=3, alias="TRIAL_HOURS")
+    trial_hours: int = Field(default=3, ge=1, le=8760, alias="TRIAL_HOURS")
     check_interval_minutes: int = Field(default=10, alias="CHECK_INTERVAL_MINUTES")
     provision_retries: int = Field(default=3, alias="PROVISION_RETRIES")
     event_max_retries: int = Field(default=30, alias="EVENT_MAX_RETRIES")

@@ -2,6 +2,8 @@ from datetime import datetime, timedelta
 import json
 
 from sqlalchemy import Select, func, select, update
+
+from app.datetime_util import utc_now_naive
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Event, Payment, Subscription, User
@@ -85,7 +87,7 @@ async def create_or_extend_subscription(
         .order_by(Subscription.ends_at.desc())
     )
     current = row.scalars().first()
-    now = datetime.utcnow()
+    now = utc_now_naive()
     if current and current.ends_at > now:
         current.ends_at = current.ends_at + delta
         current.subscription_url = subscription_url
@@ -137,7 +139,7 @@ async def revoke_user_subscriptions(session: AsyncSession, user_id: int) -> list
 
 
 async def list_expired_active_subscriptions(session: AsyncSession) -> list[Subscription]:
-    now = datetime.utcnow()
+    now = utc_now_naive()
     row = await session.execute(
         select(Subscription).where(Subscription.status == "active", Subscription.ends_at <= now)
     )
@@ -145,7 +147,7 @@ async def list_expired_active_subscriptions(session: AsyncSession) -> list[Subsc
 
 
 async def list_active_subscriptions_for_user(session: AsyncSession, user_id: int) -> list[Subscription]:
-    now = datetime.utcnow()
+    now = utc_now_naive()
     row = await session.execute(
         select(Subscription)
         .where(Subscription.user_id == user_id, Subscription.status == "active")
@@ -160,7 +162,7 @@ async def list_subscriptions_needing_reminder(
     hours_before: int,
     window_minutes: int = 30,
 ) -> list[Subscription]:
-    now = datetime.utcnow()
+    now = utc_now_naive()
     target = now + timedelta(hours=hours_before)
     low = target - timedelta(minutes=window_minutes)
     high = target + timedelta(minutes=window_minutes)
@@ -180,7 +182,7 @@ async def mark_reminder_sent(session: AsyncSession, subscription_id: int) -> Non
     await session.execute(
         update(Subscription)
         .where(Subscription.id == subscription_id)
-        .values(reminder_sent_at=datetime.utcnow())
+        .values(reminder_sent_at=utc_now_naive())
     )
 
 
@@ -189,7 +191,7 @@ async def mark_trial_used(session: AsyncSession, user_id: int) -> None:
 
 
 async def create_event(session: AsyncSession, type_: str, payload: dict) -> Event:
-    now = datetime.utcnow()
+    now = utc_now_naive()
     ev = Event(
         type=type_,
         payload=json.dumps(payload, ensure_ascii=False),
@@ -214,7 +216,7 @@ async def list_pending_provision_events(session: AsyncSession, limit: int = 25) 
 
 
 async def touch_event(session: AsyncSession, event_id: int, *, status: str, retries: int | None = None) -> None:
-    values: dict = {"status": status, "updated_at": datetime.utcnow()}
+    values: dict = {"status": status, "updated_at": utc_now_naive()}
     if retries is not None:
         values["retries"] = retries
     await session.execute(update(Event).where(Event.id == event_id).values(**values))
@@ -226,7 +228,7 @@ async def admin_stats_snapshot(session: AsyncSession) -> dict[str, int | float]:
     )
     active_subs = int(active_row.scalar_one() or 0)
 
-    since = datetime.utcnow() - timedelta(days=30)
+    since = utc_now_naive() - timedelta(days=30)
     pay_row = await session.execute(
         select(func.count(), func.coalesce(func.sum(Payment.amount_minor), 0))
         .select_from(Payment)

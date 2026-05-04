@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.config import settings
+from app.datetime_util import naive_utc_timestamp
 from app.db.repositories import (
     admin_stats_snapshot,
     extend_subscription_days,
@@ -88,7 +89,7 @@ async def cmd_add_days(message: Message) -> None:
             return
         node_url = sub.node_api_url
         ext_id = sub.external_user_id
-        ends_ts = int(sub.ends_at.timestamp())
+        ends_ts = naive_utc_timestamp(sub.ends_at)
         await session.commit()
 
     try:
