@@ -1,10 +1,29 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
 from app.services.node_registry import marzban_provision_options
 from app.services.server_selector import VpnNode
+
+
+def _public_subscription_url(raw: str, panel_base: str) -> str:
+    """Подменить localhost/127.0.0.1 в ссылке подписки на публичный хост панели (как в браузере)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    panel_base = panel_base.rstrip("/")
+    base = panel_base if "://" in panel_base else f"https://{panel_base}"
+    try:
+        pb = urlparse(base)
+        p = urlparse(raw)
+    except ValueError:
+        return raw
+    host = (p.hostname or "").lower()
+    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+        return urlunparse((pb.scheme, pb.netloc, p.path, p.params, p.query, p.fragment))
+    return raw
 
 
 def _marzban_require_ok(response: httpx.Response) -> None:
@@ -116,9 +135,24 @@ class MarzbanAdapter:
                 _marzban_require_ok(response)
                 user_data = response.json()
 
-        subscription_url = user_data.get("subscription_url", "")
+            # Полная ссылка с токеном и правильным хостом (POST иногда без subscription_url или с 127.0.0.1).
+            get_r = await client.get(
+                f"{self.panel_url}/api/user/{username}",
+                headers=headers,
+            )
+            _marzban_require_ok(get_r)
+            user_data = get_r.json()
+
+        subscription_url = _public_subscription_url(
+            (user_data.get("subscription_url") or "").strip(),
+            self.panel_url,
+        )
         if not subscription_url:
-            subscription_url = f"{self.panel_url}/sub/{username}"
+            raise RuntimeError(
+                "Marzban не вернул subscription_url. На сервере Marzban в его .env задайте "
+                "XRAY_SUBSCRIPTION_URL_PREFIX=https://ваш-домен-панели (без /dashboard/), "
+                "перезапустите Marzban и снова выдайте подписку."
+            )
         return ProvisionResult(
             external_user_id=username,
             subscription_url=subscription_url,
