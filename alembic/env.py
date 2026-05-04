@@ -2,11 +2,25 @@ from __future__ import annotations
 
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import create_engine, pool
 
 from app.db.models import Base
+
+
+def _load_dotenv_early() -> None:
+    """Подхватить .env при ручном запуске alembic (systemd и так подставляет EnvironmentFile)."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    root = Path(__file__).resolve().parents[1]
+    load_dotenv(root / ".env", override=False)
+
+
+_load_dotenv_early()
 
 config = context.config
 

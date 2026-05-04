@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""
+Выставить в контейнере Postgres пароль пользователя postgres такой же, как в DATABASE_URL в .env.
+
+Запуск на VPS (из корня репозитория, где лежит .env):
+  /opt/myvpn/.venv/bin/python scripts/fix_postgres_password.py
+
+Переменная окружения POSTGRES_CONTAINER — имя контейнера (по умолчанию myvpn-postgres).
+"""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import unquote_plus, urlparse
+
+
+def _escape_sql_literal(s: str) -> str:
+    return s.replace("'", "''")
+
+
+def main() -> int:
+    root = Path(__file__).resolve().parents[1]
+    env_path = root / ".env"
+    if not env_path.is_file():
+        print(f"Нет файла {env_path}", file=sys.stderr)
+        return 1
+    text = env_path.read_text(encoding="utf-8")
+    m = re.search(r"^DATABASE_URL=(.*)$", text, re.MULTILINE)
+    if not m:
+        print("В .env не найдена строка DATABASE_URL=", file=sys.stderr)
+        return 1
+    raw_url = m.group(1).strip().strip('"').strip("'")
+    url = raw_url.replace("postgresql+asyncpg", "postgresql", 1)
+    parsed = urlparse(url)
+    if not parsed.password:
+        print("В DATABASE_URL нет пароля (user:pass@)", file=sys.stderr)
+        return 1
+    pw = unquote_plus(parsed.password)
+    container = os.environ.get("POSTGRES_CONTAINER", "myvpn-postgres")
+    sql = f"ALTER USER postgres WITH PASSWORD '{_escape_sql_literal(pw)}';"
+    cmd = ["docker", "exec", container, "psql", "-U", "postgres", "-d", "postgres", "-c", sql]
+    print(f"Обновляю пароль postgres в контейнере {container} по паролю из DATABASE_URL …")
+    try:
+        subprocess.run(cmd, check=True)
+    except FileNotFoundError:
+        print("Команда docker не найдена. Установите Docker или выполните ALTER вручную.", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as e:
+        print(f"docker exec завершился с кодом {e.returncode}", file=sys.stderr)
+        return e.returncode or 1
+    print("Готово. Запустите: systemctl restart myvpn-bot")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

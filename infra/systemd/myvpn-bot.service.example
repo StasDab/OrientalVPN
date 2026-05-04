@@ -12,11 +12,12 @@
 #   sudo systemctl daemon-reload && sudo systemctl enable --now myvpn-bot
 #
 # Файл /opt/myvpn/app/.env — как в .env.example (DATABASE_URL на 127.0.0.1 если БД в Docker).
+# Если Postgres не в Docker — удалите docker.service из After= и Wants= ниже.
 
 [Unit]
 Description=MyVpn Telegram bot (aiogram)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target docker.service
+Wants=network-online.target docker.service
 
 [Service]
 Type=simple
