@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     vpn_nodes_json: str = Field(default="[]", alias="VPN_NODES_JSON")
     # По умолчанию Vision — типичный REALITY в Marzban. Отключить: MARZBAN_VLESS_FLOW= в .env (пусто).
     marzban_vless_flow: str = Field(default="xtls-rprx-vision", alias="MARZBAN_VLESS_FLOW")
+    # Подменить только хост у /sub/... (отдельный домен подписки; nginx → Marzban).
+    subscription_url_prefix: str = Field(default="", alias="SUBSCRIPTION_URL_PREFIX")
 
     @property
     def admin_id_set(self) -> set[int]:

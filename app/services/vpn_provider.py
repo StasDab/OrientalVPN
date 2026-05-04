@@ -8,6 +8,59 @@ from app.services.node_registry import marzban_provision_options
 from app.services.server_selector import VpnNode
 
 
+def _subscription_url_from_user_json(data: dict) -> str:
+    for key in ("subscription_url", "subscriptionUrl"):
+        v = data.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _ensure_absolute_subscription_url(raw: str, panel_base: str) -> str:
+    """Если Marzban отдал только путь /sub/..., дописать публичный origin."""
+    raw = (raw or "").strip()
+    if not raw or "://" in raw:
+        return raw
+    if raw.startswith("/"):
+        pb = panel_base.rstrip("/")
+        base = pb if "://" in pb else f"https://{pb}"
+        return base + raw
+    return raw
+
+
+def _subscription_url_force_panel_host(url: str, panel_public_base: str) -> str:
+    """
+    Ссылка «как в панели»: для /sub/... всегда scheme+host из PANEL_URL бота.
+    Иначе при api_url на внутренний адрес в JSON может быть другой хост, чем у кнопки «Скопировать».
+    """
+    url = (url or "").strip()
+    panel_public_base = (panel_public_base or "").strip().rstrip("/")
+    if not url or not panel_public_base:
+        return url
+    try:
+        p = urlparse(url if "://" in url else f"https://{url}")
+    except ValueError:
+        return url
+    path = p.path or ""
+    if "/sub/" not in path and not path.startswith("/sub/"):
+        return url
+    pub = urlparse(panel_public_base if "://" in panel_public_base else f"https://{panel_public_base}")
+    return urlunparse((pub.scheme, pub.netloc, path, p.params, p.query, p.fragment))
+
+
+def _subscription_url_replace_host(url: str, new_origin: str) -> str:
+    new_origin = (new_origin or "").strip().rstrip("/")
+    if not new_origin or not url:
+        return url
+    base = new_origin if "://" in new_origin else f"https://{new_origin}"
+    try:
+        pb = urlparse(base)
+        p = urlparse(url if "://" in url else f"https://{url}")
+    except ValueError:
+        return url
+    return urlunparse((pb.scheme, pb.netloc, p.path, p.params, p.query, p.fragment))
+
+
 def _public_subscription_url(raw: str, panel_base: str) -> str:
     """Подменить localhost/127.0.0.1 в ссылке подписки на публичный хост панели (как в браузере)."""
     raw = (raw or "").strip()
@@ -143,9 +196,14 @@ class MarzbanAdapter:
             _marzban_require_ok(get_r)
             user_data = get_r.json()
 
-        subscription_url = _public_subscription_url(
-            (user_data.get("subscription_url") or "").strip(),
-            self.panel_url,
+        from app.config import settings
+
+        raw_sub = _subscription_url_from_user_json(user_data)
+        subscription_url = _ensure_absolute_subscription_url(raw_sub, self.panel_url)
+        subscription_url = _public_subscription_url(subscription_url, self.panel_url)
+        subscription_url = _subscription_url_force_panel_host(subscription_url, settings.panel_url)
+        subscription_url = _subscription_url_replace_host(
+            subscription_url, settings.subscription_url_prefix
         )
         if not subscription_url:
             raise RuntimeError(
