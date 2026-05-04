@@ -1,5 +1,4 @@
 import logging
-import html
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -207,20 +206,11 @@ async def callback_trial_location(call: CallbackQuery) -> None:
         await session.commit()
 
     hours = settings.trial_hours
-    fp_hint = ""
-    fp = (settings.marzban_reality_fingerprint or "").strip().lower()
-    if fp and fp != "chrome":
-        fp_hint = (
-            f"\n\n<i>Если в Happ после импорта подписки отпечаток всё ещё Chrome: в Marzban откройте "
-            f"<b>Host</b> для inbound (например loc-se) и задайте <b>Fingerprint = {html.escape(fp)}</b> "
-            "— иначе панель кладёт в ссылку chrome по умолчанию.</i>"
-        )
     await call.message.answer(
         f"Пробный доступ на ~{hours} ч.\n"
         f"Локация: {LOCATION_TITLES.get(location_code, location_code.upper())}"
         f"{subscription_url_pre_block(result.subscription_url)}\n"
-        "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль."
-        f"{fp_hint}",
+        "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль.",
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
