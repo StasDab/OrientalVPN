@@ -23,6 +23,7 @@ from app.plans import LOCATION_TITLES, PLAN_MAP, plan_days
 from app.services.node_registry import available_location_codes, pick_node_for_location
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
+from app.telegram_format import code_inline
 
 log = logging.getLogger(__name__)
 
@@ -208,8 +209,11 @@ async def callback_trial_location(call: CallbackQuery) -> None:
     await call.message.answer(
         f"Пробный доступ на ~{hours} ч.\n"
         f"Локация: {LOCATION_TITLES.get(location_code, location_code.upper())}\n"
-        f"Ссылка: {result.subscription_url}\n\n"
-        "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль."
+        "Ссылка (нажмите, чтобы скопировать):\n"
+        f"{code_inline(result.subscription_url)}\n\n"
+        "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль.",
+        parse_mode="HTML",
+        disable_web_page_preview=True,
     )
     await call.answer()
 
@@ -234,9 +238,13 @@ async def callback_my(call: CallbackQuery) -> None:
     for s in subs:
         loc = LOCATION_TITLES.get(s.location_code, s.location_code.upper())
         lines.append(
-            f"• {loc} — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n  {s.subscription_url}"
+            f"• {loc} — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n  {code_inline(s.subscription_url)}"
         )
-    await call.message.answer("Ваши активные подписки:\n\n" + "\n\n".join(lines))
+    await call.message.answer(
+        "Ваши активные подписки:\n\n" + "\n\n".join(lines),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
     await call.answer()
 
 
@@ -255,6 +263,10 @@ async def cmd_my(message: Message) -> None:
     for s in subs:
         loc = LOCATION_TITLES.get(s.location_code, s.location_code.upper())
         lines.append(
-            f"• {loc} — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n  {s.subscription_url}"
+            f"• {loc} — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n  {code_inline(s.subscription_url)}"
         )
-    await message.answer("Ваши активные подписки:\n\n" + "\n\n".join(lines))
+    await message.answer(
+        "Ваши активные подписки:\n\n" + "\n\n".join(lines),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )

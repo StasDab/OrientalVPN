@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     vpn_nodes_json: str = Field(default="[]", alias="VPN_NODES_JSON")
     # По умолчанию Vision — типичный REALITY в Marzban. Отключить: MARZBAN_VLESS_FLOW= в .env (пусто).
     marzban_vless_flow: str = Field(default="xtls-rprx-vision", alias="MARZBAN_VLESS_FLOW")
+    # На iOS (Happ и аналоги) часто требуется fp=qq, иначе REALITY может рвать соединение.
+    # Можно переопределить в .env: MARZBAN_REALITY_FINGERPRINT=chrome|qq|safari|...
+    marzban_reality_fingerprint: str = Field(default="qq", alias="MARZBAN_REALITY_FINGERPRINT")
+    # Запас по времени для expire (страховка от рассинхрона времени/округлений).
+    marzban_expire_skew_seconds: int = Field(default=300, ge=0, le=3600, alias="MARZBAN_EXPIRE_SKEW_SECONDS")
     # Подменить только хост у /sub/... (отдельный домен подписки; nginx → Marzban).
     subscription_url_prefix: str = Field(default="", alias="SUBSCRIPTION_URL_PREFIX")
 

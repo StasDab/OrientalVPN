@@ -16,6 +16,9 @@ def marzban_provision_options(node: VpnNode | None, location_code: str) -> tuple
     flow = (settings.marzban_vless_flow or "").strip()
     if flow and "flow" not in vless:
         vless["flow"] = flow
+    fingerprint = (settings.marzban_reality_fingerprint or "").strip()
+    if fingerprint and "fingerprint" not in vless:
+        vless["fingerprint"] = fingerprint
     return tag, vless
 
 

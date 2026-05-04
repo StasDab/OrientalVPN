@@ -131,6 +131,8 @@ class MarzbanAdapter:
         days: int | None = None,
         hours: int | None = None,
     ) -> ProvisionResult:
+        from app.config import settings
+
         token = await self._get_token()
         username = f"tg_{tg_id}"
         if hours is not None:
@@ -139,7 +141,8 @@ class MarzbanAdapter:
             delta = timedelta(days=days)
         else:
             delta = timedelta(days=30)
-        expire_at = utc_timestamp_after(delta)
+        # Небольшой запас: на некоторых инсталляциях/при дрейфе времени expire может восприниматься как "в прошлом".
+        expire_at = utc_timestamp_after(delta) + int(settings.marzban_expire_skew_seconds or 0)
         inbound_tag, vless_settings = marzban_provision_options(node, location_code)
 
         # Marzban UserCreate: proxies не пустой; inbounds — теги как в панели (Core / Xray).
@@ -196,8 +199,6 @@ class MarzbanAdapter:
             )
             _marzban_require_ok(get_r)
             user_data = get_r.json()
-
-        from app.config import settings
 
         raw_sub = _subscription_url_from_user_json(user_data)
         subscription_url = _ensure_absolute_subscription_url(raw_sub, self.panel_url)

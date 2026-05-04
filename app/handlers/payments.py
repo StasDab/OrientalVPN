@@ -15,6 +15,7 @@ from app.plans import PLAN_MAP, decode_invoice_payload, plan_days
 from app.services.node_registry import pick_node_for_location
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
+from app.telegram_format import code_inline
 
 router = Router()
 
@@ -159,6 +160,9 @@ async def successful_payment(message: Message) -> None:
     await message.answer(
         "Оплата подтверждена.\n"
         f"Локация: {location_code.upper()}\n"
-        f"Ссылка подписки: {result.subscription_url}\n\n"
-        "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль."
+        "Ссылка подписки (нажмите, чтобы скопировать):\n"
+        f"{code_inline(result.subscription_url)}\n\n"
+        "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль.",
+        parse_mode="HTML",
+        disable_web_page_preview=True,
     )

@@ -31,8 +31,10 @@ def main() -> int:
         from dotenv import load_dotenv
     except ImportError:
         load_dotenv = None  # type: ignore[assignment]
+    env_path = Path(__file__).resolve().parents[1] / ".env"
     if load_dotenv:
-        load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+        # override=True: значения из .env на VPS должны перебивать устаревший DATABASE_URL в shell
+        load_dotenv(env_path, override=True)
 
     raw_url = os.getenv("DATABASE_URL", "").strip()
     if not raw_url:
@@ -44,7 +46,18 @@ def main() -> int:
 
     import psycopg2
 
-    conn = psycopg2.connect(dsn)
+    try:
+        conn = psycopg2.connect(dsn)
+    except psycopg2.OperationalError as e:
+        err = str(e).lower()
+        if "password authentication failed" in err:
+            print(
+                "Ошибка пароля PostgreSQL: пароль в DATABASE_URL не совпадает с пользователем postgres в контейнере.\n"
+                f"Проверьте {env_path} и выполните из корня репозитория:\n"
+                "  /opt/myvpn/.venv/bin/python scripts/fix_postgres_password.py",
+                file=sys.stderr,
+            )
+        raise SystemExit(1) from e
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
