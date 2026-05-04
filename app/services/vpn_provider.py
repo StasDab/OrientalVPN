@@ -53,11 +53,13 @@ class MarzbanAdapter:
         expire_at = int((datetime.utcnow() + delta).timestamp())
         inbound_tag = f"loc-{location_code.lower()}"
 
+        # Marzban UserCreate требует непустой proxies (см. validate_proxies в User).
         payload = {
             "username": username,
             "status": "active",
             "expire": expire_at,
             "note": f"Telegram user {tg_id}",
+            "proxies": {"vless": {}},
             "inbounds": {"vless": [inbound_tag]},
             "on_hold_timeout": 0,
             "on_hold_expire_duration": 0,
