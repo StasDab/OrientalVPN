@@ -92,14 +92,26 @@ class MarzbanAdapter:
                 headers = {"Authorization": f"Bearer {token}"}
                 response = await client.post(f"{self.panel_url}/api/user", json=payload, headers=headers)
             if response.status_code == 409:
-                patch_payload = {"expire": expire_at, "status": "active"}
-                patch = await client.put(
+                # Пользователь tg_* уже есть (обрыв прошлой попытки). PUT только expire/status
+                # на части инсталляций Marzban даёт 500 — надёжнее удалить и создать заново.
+                del_r = await client.delete(
                     f"{self.panel_url}/api/user/{username}",
-                    json=patch_payload,
                     headers=headers,
                 )
-                _marzban_require_ok(patch)
-                user_data = patch.json()
+                if del_r.status_code not in (200, 404):
+                    _marzban_require_ok(del_r)
+                response = await client.post(
+                    f"{self.panel_url}/api/user", json=payload, headers=headers
+                )
+                if response.status_code == 401:
+                    self._token = None
+                    token = await self._get_token()
+                    headers = {"Authorization": f"Bearer {token}"}
+                    response = await client.post(
+                        f"{self.panel_url}/api/user", json=payload, headers=headers
+                    )
+                _marzban_require_ok(response)
+                user_data = response.json()
             else:
                 _marzban_require_ok(response)
                 user_data = response.json()
