@@ -22,7 +22,7 @@ from app.plans import LOCATION_TITLES, plan_days
 from app.services.node_registry import pick_node_for_location
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
-from app.telegram_format import code_inline
+from app.telegram_format import subscription_url_pre_block
 
 log = logging.getLogger(__name__)
 
@@ -144,9 +144,8 @@ async def _process_provision_events(bot: Bot) -> None:
             try:
                 await bot.send_message(
                     tg_user_id,
-                    "Доступ выдан после ожидания.\n"
-                    "Ссылка подписки (нажмите, чтобы скопировать):\n"
-                    f"{code_inline(result.subscription_url)}\n"
+                    "Доступ выдан после ожидания."
+                    f"{subscription_url_pre_block(result.subscription_url)}\n"
                     "Инструкция: клиент → вставить ссылку → обновить профиль.",
                     parse_mode="HTML",
                     disable_web_page_preview=True,

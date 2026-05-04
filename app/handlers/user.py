@@ -1,4 +1,5 @@
 import logging
+import html
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -23,7 +24,7 @@ from app.plans import LOCATION_TITLES, PLAN_MAP, plan_days
 from app.services.node_registry import available_location_codes, pick_node_for_location
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
-from app.telegram_format import code_inline
+from app.telegram_format import subscription_url_pre_block, subscription_url_pre_only
 
 log = logging.getLogger(__name__)
 
@@ -206,12 +207,20 @@ async def callback_trial_location(call: CallbackQuery) -> None:
         await session.commit()
 
     hours = settings.trial_hours
+    fp_hint = ""
+    fp = (settings.marzban_reality_fingerprint or "").strip().lower()
+    if fp and fp != "chrome":
+        fp_hint = (
+            f"\n\n<i>Если в Happ после импорта подписки отпечаток всё ещё Chrome: в Marzban откройте "
+            f"<b>Host</b> для inbound (например loc-se) и задайте <b>Fingerprint = {html.escape(fp)}</b> "
+            "— иначе панель кладёт в ссылку chrome по умолчанию.</i>"
+        )
     await call.message.answer(
         f"Пробный доступ на ~{hours} ч.\n"
-        f"Локация: {LOCATION_TITLES.get(location_code, location_code.upper())}\n"
-        "Ссылка (нажмите, чтобы скопировать):\n"
-        f"{code_inline(result.subscription_url)}\n\n"
-        "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль.",
+        f"Локация: {LOCATION_TITLES.get(location_code, location_code.upper())}"
+        f"{subscription_url_pre_block(result.subscription_url)}\n"
+        "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль."
+        f"{fp_hint}",
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -238,7 +247,8 @@ async def callback_my(call: CallbackQuery) -> None:
     for s in subs:
         loc = LOCATION_TITLES.get(s.location_code, s.location_code.upper())
         lines.append(
-            f"• {loc} — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n  {code_inline(s.subscription_url)}"
+            f"• {loc} — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n\n"
+            f"{subscription_url_pre_only(s.subscription_url)}"
         )
     await call.message.answer(
         "Ваши активные подписки:\n\n" + "\n\n".join(lines),
@@ -263,7 +273,8 @@ async def cmd_my(message: Message) -> None:
     for s in subs:
         loc = LOCATION_TITLES.get(s.location_code, s.location_code.upper())
         lines.append(
-            f"• {loc} — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n  {code_inline(s.subscription_url)}"
+            f"• {loc} — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n\n"
+            f"{subscription_url_pre_only(s.subscription_url)}"
         )
     await message.answer(
         "Ваши активные подписки:\n\n" + "\n\n".join(lines),
