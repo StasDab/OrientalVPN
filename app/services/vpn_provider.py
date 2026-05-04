@@ -84,8 +84,13 @@ class MarzbanAdapter:
         }
 
         headers = {"Authorization": f"Bearer {token}"}
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(f"{self.panel_url}/api/user", json=payload, headers=headers)
+            if response.status_code == 401:
+                self._token = None
+                token = await self._get_token()
+                headers = {"Authorization": f"Bearer {token}"}
+                response = await client.post(f"{self.panel_url}/api/user", json=payload, headers=headers)
             if response.status_code == 409:
                 patch_payload = {"expire": expire_at, "status": "active"}
                 patch = await client.put(

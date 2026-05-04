@@ -25,8 +25,8 @@ class Settings(BaseSettings):
     event_max_retries: int = Field(default=30, alias="EVENT_MAX_RETRIES")
     reminder_hours_before: int = Field(default=24, alias="REMINDER_HOURS_BEFORE")
     vpn_nodes_json: str = Field(default="[]", alias="VPN_NODES_JSON")
-    # Для VLESS REALITY + Vision в Marzban часто нужно: xtls-rprx-vision
-    marzban_vless_flow: str = Field(default="", alias="MARZBAN_VLESS_FLOW")
+    # По умолчанию Vision — типичный REALITY в Marzban. Отключить: MARZBAN_VLESS_FLOW= в .env (пусто).
+    marzban_vless_flow: str = Field(default="xtls-rprx-vision", alias="MARZBAN_VLESS_FLOW")
 
     @property
     def admin_id_set(self) -> set[int]:
@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     @property
     def vpn_nodes(self) -> list[dict]:
         try:
-            data = json.loads(self.vpn_nodes_json)
+            raw = (self.vpn_nodes_json or "").replace("\r", "").strip()
+            data = json.loads(raw)
             return data if isinstance(data, list) else []
         except json.JSONDecodeError:
             return []
