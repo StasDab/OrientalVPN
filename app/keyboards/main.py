@@ -1,6 +1,7 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.plans import LOCATION_CODES, LOCATION_TITLES, PLAN_MAP
+from app.plans import LOCATION_TITLES, PLAN_MAP
+from app.services.node_registry import available_location_codes
 
 
 def main_menu_kb() -> InlineKeyboardMarkup:
@@ -30,7 +31,7 @@ def plans_kb() -> InlineKeyboardMarkup:
 
 def locations_kb(plan_code: str) -> InlineKeyboardMarkup:
     buttons = []
-    for loc in LOCATION_CODES:
+    for loc in available_location_codes():
         title = LOCATION_TITLES.get(loc, loc.upper())
         buttons.append(
             [InlineKeyboardButton(text=title, callback_data=f"loc:{plan_code}:{loc}")]
@@ -40,7 +41,7 @@ def locations_kb(plan_code: str) -> InlineKeyboardMarkup:
 
 def trial_locations_kb() -> InlineKeyboardMarkup:
     buttons = []
-    for loc in LOCATION_CODES:
+    for loc in available_location_codes():
         title = LOCATION_TITLES.get(loc, loc.upper())
         buttons.append([InlineKeyboardButton(text=title, callback_data=f"trial_loc:{loc}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)

@@ -1,3 +1,5 @@
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, LabeledPrice, Message
@@ -18,11 +20,19 @@ from app.keyboards.main import (
     trial_locations_kb,
 )
 from app.plans import LOCATION_TITLES, PLAN_MAP, plan_days
-from app.services.node_registry import pick_node_for_location
+from app.services.node_registry import available_location_codes, pick_node_for_location
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
 
+log = logging.getLogger(__name__)
+
 router = Router()
+
+NO_VPN_NODES_TEXT = (
+    "VPN-ноды не настроены: в .env на сервере задайте VPN_NODES_JSON "
+    "(список локаций и api_url панели Marzban). Пример в .env.example. "
+    "После правки перезапустите сервис бота."
+)
 
 
 HELP_TEXT = (
@@ -68,6 +78,10 @@ async def callback_buy(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("plan:"))
 async def callback_plan(call: CallbackQuery) -> None:
     plan_code = call.data.split(":")[1]
+    if not available_location_codes():
+        await call.message.answer(NO_VPN_NODES_TEXT)
+        await call.answer()
+        return
     await call.message.answer("Выберите локацию:", reply_markup=locations_kb(plan_code))
     await call.answer()
 
@@ -108,6 +122,10 @@ async def callback_trial(call: CallbackQuery) -> None:
         if user and user.trial_used:
             await call.answer("Пробный период уже использован.", show_alert=True)
             return
+    if not available_location_codes():
+        await call.message.answer(NO_VPN_NODES_TEXT)
+        await call.answer()
+        return
     await call.message.answer("Выберите локацию для пробного доступа:", reply_markup=trial_locations_kb())
     await call.answer()
 
@@ -119,6 +137,9 @@ async def cmd_trial(message: Message) -> None:
         if user and user.trial_used:
             await message.answer("Пробный период уже использован.")
             return
+    if not available_location_codes():
+        await message.answer(NO_VPN_NODES_TEXT)
+        return
     await message.answer("Выберите локацию для пробного доступа:", reply_markup=trial_locations_kb())
 
 
@@ -127,7 +148,10 @@ async def callback_trial_location(call: CallbackQuery) -> None:
     if not call.from_user:
         await call.answer()
         return
-    location_code = call.data.split(":")[1]
+    location_code = call.data.split(":")[1].lower()
+    if location_code not in available_location_codes():
+        await call.answer("Эта локация больше не доступна. Откройте меню заново.", show_alert=True)
+        return
     selected_node = pick_node_for_location(location_code)
     if not selected_node:
         await call.answer("Нет доступной ноды в этой локации.", show_alert=True)
@@ -160,6 +184,10 @@ async def callback_trial_location(call: CallbackQuery) -> None:
             )
         except Exception:
             await session.rollback()
+            log.exception(
+                "trial_provision_failed",
+                extra={"tg_id": call.from_user.id, "location": location_code},
+            )
             await call.answer("Не удалось выдать пробный доступ. Попробуйте позже.", show_alert=True)
             return
 

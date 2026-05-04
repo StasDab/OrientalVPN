@@ -2,6 +2,12 @@ from app.config import settings
 from app.services.server_selector import VpnNode, select_best_node
 
 
+def available_location_codes() -> tuple[str, ...]:
+    """Локации только из VPN_NODES_JSON. Без нод — пустой tuple (не подставляем de/nl/se)."""
+    nodes = load_nodes()
+    return tuple(sorted({n.location_code.lower() for n in nodes}))
+
+
 def load_nodes() -> list[VpnNode]:
     nodes: list[VpnNode] = []
     for raw in settings.vpn_nodes:
