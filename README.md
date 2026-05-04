@@ -3,6 +3,7 @@
 ## Что внутри
 - ТЗ: `TZ_BOT.md`
 - Анализ VPS и локаций: `VPS_LOCATIONS_ANALYSIS.md`
+- **Multihop РФ → EU** (белые списки / LTE): `MULTIHOP_RU_EU.md`
 - Инфраструктурный шаблон: `infra/docker-compose.yml`
 - Каркас бота: `app/`
 
