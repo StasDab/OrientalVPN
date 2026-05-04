@@ -1,0 +1,36 @@
+# Пример unit для запуска бота на VPS без Docker-образа приложения
+# (Postgres/Redis при этом могут быть в Docker на localhost:5432 / 6379).
+#
+# Установка:
+#   sudo useradd -r -m -s /bin/bash myvpn
+#   sudo mkdir -p /opt/myvpn && sudo chown myvpn:myvpn /opt/myvpn
+#   git clone <repo> /opt/myvpn/app   # или rsync/scp
+#   cd /opt/myvpn/app && python3.12 -m venv /opt/myvpn/.venv
+#   /opt/myvpn/.venv/bin/pip install -r requirements.txt
+#   sudo cp infra/systemd/myvpn-bot.service.example /etc/systemd/system/myvpn-bot.service
+#   правки путей/User в unit при необходимости
+#   sudo systemctl daemon-reload && sudo systemctl enable --now myvpn-bot
+#
+# Файл /opt/myvpn/app/.env — как в .env.example (DATABASE_URL на 127.0.0.1 если БД в Docker).
+
+[Unit]
+Description=MyVpn Telegram bot (aiogram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=myvpn
+Group=myvpn
+WorkingDirectory=/opt/myvpn/app
+EnvironmentFile=/opt/myvpn/app/.env
+ExecStartPre=/opt/myvpn/.venv/bin/alembic upgrade head
+ExecStart=/opt/myvpn/.venv/bin/python -m app.main
+Restart=on-failure
+RestartSec=15
+
+# Ограничения по желанию:
+# MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
