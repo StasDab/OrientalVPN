@@ -29,6 +29,7 @@ from app.services.node_registry import (
     pick_node_for_location,
     pick_primary_node,
 )
+from app.services.server_selector import pick_share_link_for_node
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
 from app.telegram_format import (
@@ -79,7 +80,7 @@ HELP_TEXT = (
     "Команды: /buy — тарифы, /trial — пробный доступ, "
     "/my — подписки, /profile — профиль, /help — эта справка.\n\n"
     "Пробный доступ и оплата дают одну ссылку подписки со всеми серверами. "
-    "Отдельную ссылку на один узел можно взять в «Выбрать сервер» (нужен link_match в VPN_NODES_JSON)."
+    "В «Выбрать сервер» можно получить отдельную ссылку на локацию, если она доступна."
 )
 
 
@@ -500,9 +501,8 @@ async def callback_srv_menu(call: CallbackQuery) -> None:
     await nav_edit(
         msg,
         "🌐 <b>Выберите сервер</b>\n\n"
-        "<b>Все серверы</b> — обычная ссылка подписки (/sub/), в клиенте будут все узлы.\n"
-        "<b>Один сервер</b> — одна vless-ссылка (в .env для узла задайте "
-        "<code>link_match</code>: уникальная подстрока из ссылки, например начало IP).\n",
+        "<b>Все серверы</b> — одна ссылка подписки, в клиенте появятся все узлы.\n"
+        "<b>Один сервер</b> — отдельная конфигурация для выбранной локации, когда доступна.\n",
         servers_pick_kb(),
     )
 
@@ -573,26 +573,23 @@ async def callback_srv_pick(call: CallbackQuery) -> None:
         return
 
     loc_title = LOCATION_TITLES.get(key, key.upper())
-    single_url = ""
-
-    if node.link_match:
-        matched = [ln for ln in links if node.link_match in ln]
-        if matched:
-            single_url = matched[0]
+    single_url = pick_share_link_for_node(links, node) or ""
 
     if not single_url:
-        hint = ""
-        if not node.link_match:
-            hint = (
-                "\n\n<i>В VPN_NODES_JSON для этой локации добавьте "
-                "<code>\"link_match\":\"&lt;фрагмент IP из ссылки&gt;\"</code> "
-                "(уникальный для узла), затем перезапустите бота.</i>"
-            )
+        log.warning(
+            "share_link_no_match",
+            extra={
+                "location": key,
+                "needles": list(node.link_matches),
+                "links_count": len(links),
+            },
+        )
         body = (
             f"<b>{html_escape.escape(loc_title)}</b>\n"
-            "Не удалось выделить одну ссылку автоматически."
-            f"{hint}\n\n"
-            "<b>Общая подписка (все серверы):</b>"
+            "Отдельная ссылка для этого узла сейчас недоступна.\n"
+            "Импортируйте общую подписку ниже: в клиенте обновите список серверов и выберите "
+            f"<b>{html_escape.escape(loc_title)}</b> вручную.\n\n"
+            "<b>Общая подписка</b>"
             f"{subscription_url_pre_block(sub.subscription_url)}"
         )
         await ack_callback(call)

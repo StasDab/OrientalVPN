@@ -36,8 +36,18 @@ def load_nodes() -> list[VpnNode]:
             inbound_tag = str(inbound).strip() if inbound else None
             vless_raw = raw.get("vless")
             vless = vless_raw if isinstance(vless_raw, dict) else None
-            lm = raw.get("link_match")
-            link_match = str(lm).strip() if lm else None
+            matches: list[str] = []
+            lm_one = raw.get("link_match")
+            if lm_one:
+                s = str(lm_one).strip()
+                if s:
+                    matches.append(s)
+            lm_many = raw.get("link_matches")
+            if isinstance(lm_many, list):
+                for item in lm_many:
+                    s = str(item).strip()
+                    if s and s not in matches:
+                        matches.append(s)
             nodes.append(
                 VpnNode(
                     location_code=raw["location_code"],
@@ -47,7 +57,7 @@ def load_nodes() -> list[VpnNode]:
                     is_healthy=bool(raw.get("is_healthy", True)),
                     inbound_tag=inbound_tag or None,
                     vless=vless,
-                    link_match=link_match or None,
+                    link_matches=tuple(matches),
                 )
             )
         except (KeyError, TypeError, ValueError):
