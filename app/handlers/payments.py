@@ -11,7 +11,7 @@ from app.db.repositories import (
     update_payment_status,
 )
 from app.db.session import SessionLocal
-from app.plans import PLAN_MAP, decode_invoice_payload, plan_days
+from app.plans import LOCATION_TITLES, PLAN_MAP, decode_invoice_payload, plan_days
 from app.services.node_registry import pick_node_for_location
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
@@ -159,7 +159,7 @@ async def successful_payment(message: Message) -> None:
 
     await message.answer(
         "Оплата подтверждена.\n"
-        f"Локация: {location_code.upper()}"
+        f"Локация: {LOCATION_TITLES.get(location_code, location_code.upper())}"
         f"{subscription_url_pre_block(result.subscription_url)}\n"
         "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль.",
         parse_mode="HTML",

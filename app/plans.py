@@ -7,17 +7,19 @@ from typing import Any
 
 
 PLAN_MAP: dict[str, dict[str, Any]] = {
-    "1m": {"title": "VPN 1 month", "amount": 49000, "days": 30},
-    "3m": {"title": "VPN 3 months", "amount": 120000, "days": 90},
-    "12m": {"title": "VPN 12 months", "amount": 400000, "days": 365},
+    "1m": {"title": "OrientalVPN · 30 дней", "amount": 19900, "days": 30},
+    "3m": {"title": "OrientalVPN · 90 дней", "amount": 53000, "days": 90},
+    "6m": {"title": "OrientalVPN · 180 дней", "amount": 97000, "days": 180},
+    "12m": {"title": "OrientalVPN · 365 дней", "amount": 170000, "days": 365},
 }
-
-LOCATION_CODES: tuple[str, ...] = ("de", "nl", "se")
 
 LOCATION_TITLES: dict[str, str] = {
     "de": "Germany",
     "nl": "Netherlands",
-    "se": "Sweden",
+    "se": "EU — Stockholm",
+    "eu_se": "EU — Stockholm",
+    "us": "USA — Charlotte (Sharlott)",
+    "us_nc": "USA — Charlotte (Sharlott)",
 }
 
 
@@ -33,6 +35,8 @@ def plan_days(plan_code: str) -> int:
 
 
 def decode_invoice_payload(raw: str) -> InvoicePayload | None:
+    from app.services.node_registry import available_location_codes
+
     try:
         parts = raw.split(":")
         if len(parts) != 3:
@@ -40,7 +44,7 @@ def decode_invoice_payload(raw: str) -> InvoicePayload | None:
         plan_code, location_code, uid_s = parts[0], parts[1].lower(), parts[2]
         if plan_code not in PLAN_MAP:
             return None
-        if location_code not in LOCATION_CODES:
+        if location_code not in available_location_codes():
             return None
         buyer_tg_id = int(uid_s)
     except (ValueError, TypeError):

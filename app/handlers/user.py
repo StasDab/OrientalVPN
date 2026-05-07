@@ -1,3 +1,4 @@
+import html as html_escape
 import logging
 
 from aiogram import F, Router
@@ -17,13 +18,21 @@ from app.keyboards.main import (
     locations_kb,
     main_menu_kb,
     plans_kb,
+    profile_kb,
+    subscriptions_back_kb,
     trial_locations_kb,
 )
 from app.plans import LOCATION_TITLES, PLAN_MAP, plan_days
 from app.services.node_registry import available_location_codes, pick_node_for_location
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
-from app.telegram_format import subscription_url_pre_block, subscription_url_pre_only
+from app.telegram_format import (
+    jammer_bypass_help_html,
+    subscription_url_pre_block,
+    subscription_url_pre_only,
+    subscriptions_list_intro_html,
+    tariffs_select_html,
+)
 
 log = logging.getLogger(__name__)
 
@@ -41,16 +50,18 @@ HELP_TEXT = (
     "1) Установите клиент (Happ, v2rayTun, Nekoray и т.п.).\n"
     "2) Добавьте подписку по ссылке из бота.\n"
     "3) Обновите список серверов в клиенте.\n\n"
-    "Команды: /buy — купить, /trial — пробный период, /my — мои подписки, /help — эта справка."
+    "Команды: /buy — тарифы, /trial — пробный доступ, "
+    "/my — подписки, /profile — профиль, /help — эта справка."
 )
 
 
 @router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
     await message.answer(
-        "Добро пожаловать. Здесь можно купить VPN или взять короткий пробный доступ.\n"
-        "Продолжая, вы принимаете правила сервиса (замените на свою оферту).",
+        "👋 <b>OrientalVPN</b>\n"
+        "Покупка подписки, пробный период и ссылки доступа.",
         reply_markup=main_menu_kb(),
+        parse_mode="HTML",
     )
 
 
@@ -67,12 +78,159 @@ async def callback_help(call: CallbackQuery) -> None:
 
 @router.message(Command("buy"))
 async def cmd_buy(message: Message) -> None:
-    await message.answer("Выберите тариф:", reply_markup=plans_kb())
+    await message.answer(
+        tariffs_select_html(),
+        reply_markup=plans_kb(),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "buy")
 async def callback_buy(call: CallbackQuery) -> None:
-    await call.message.answer("Выберите тариф:", reply_markup=plans_kb())
+    await call.message.answer(
+        tariffs_select_html(),
+        reply_markup=plans_kb(),
+        parse_mode="HTML",
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "menu_home")
+async def callback_menu_home(call: CallbackQuery) -> None:
+    await call.message.answer(
+        "🏠 Главное меню",
+        reply_markup=main_menu_kb(),
+    )
+    await call.answer()
+
+
+@router.message(Command("profile"))
+async def cmd_profile(message: Message) -> None:
+    if not message.from_user:
+        return
+    u = message.from_user
+    uname = f"@{html_escape.escape(u.username)}" if u.username else "—"
+    txt = (
+        "👤 <b>Профиль</b>\n"
+        f"Ваш ID: <code>{u.id}</code>\n"
+        f"Username: {uname}\n"
+        "<b>Email (для чеков):</b> <i>не указан — добавим после подключения ЮKassa/Telegram Payments</i>\n\n"
+        "💰 <b>Баланс:</b> <code>0 ₽</code>\n\n"
+        "🌱 <b>Уровень:</b> Новичок\n\n"
+        "💡 <i>Пополните баланс через «Купить» или активируйте промокод, когда функция будет доступна.</i>"
+    )
+    await message.answer(txt, parse_mode="HTML", reply_markup=profile_kb())
+
+
+@router.callback_query(F.data == "profile")
+async def callback_profile(call: CallbackQuery) -> None:
+    if not call.from_user:
+        await call.answer()
+        return
+    u = call.from_user
+    uname = f"@{html_escape.escape(u.username)}" if u.username else "—"
+    txt = (
+        "👤 <b>Профиль</b>\n"
+        f"Ваш ID: <code>{u.id}</code>\n"
+        f"Username: {uname}\n"
+        "<b>Email (для чеков):</b> <i>не указан — добавим после подключения ЮKassa/Telegram Payments</i>\n\n"
+        "💰 <b>Баланс:</b> <code>0 ₽</code>\n\n"
+        "🌱 <b>Уровень:</b> Новичок\n\n"
+        "💡 <i>Активируйте промокод или оформите подписку в разделе «Купить».</i>"
+    )
+    await call.message.answer(txt, parse_mode="HTML", reply_markup=profile_kb())
+    await call.answer()
+
+
+@router.callback_query(F.data == "profile_level")
+async def profile_level(call: CallbackQuery) -> None:
+    await call.message.answer(
+        "🏆 <b>Ваш уровень</b>\nНовичок",
+        parse_mode="HTML",
+        reply_markup=subscriptions_back_kb(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "profile_balance")
+async def profile_balance(call: CallbackQuery) -> None:
+    await call.message.answer(
+        "💰 <b>Мой баланс</b>\nСейчас: <code>0 ₽</code>\n\n"
+        "Подписка VPN оплачивается отдельным счётом в разделе «Купить».",
+        parse_mode="HTML",
+        reply_markup=subscriptions_back_kb(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "profile_topup")
+async def profile_topup(call: CallbackQuery) -> None:
+    await call.message.answer(
+        tariffs_select_html(),
+        parse_mode="HTML",
+        reply_markup=plans_kb(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "profile_promo")
+async def profile_promo(call: CallbackQuery) -> None:
+    await call.message.answer(
+        "🎟️ Промокоды скоро появятся в боте. Следите за обновлениями.",
+        reply_markup=subscriptions_back_kb(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "jammer_help")
+async def jammer_help(call: CallbackQuery) -> None:
+    await call.message.answer(
+        jammer_bypass_help_html(),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=subscriptions_back_kb(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "profile_subs")
+async def profile_subs(call: CallbackQuery) -> None:
+    if not call.from_user:
+        await call.answer()
+        return
+    async with SessionLocal() as session:
+        user = await get_user_by_tg_id(session, call.from_user.id)
+        if not user:
+            await call.message.answer(
+                "Подписок пока нет. Используйте «Купить» или пробный период.",
+                disable_web_page_preview=True,
+                reply_markup=subscriptions_back_kb(),
+            )
+            await call.answer()
+            return
+        subs = await list_active_subscriptions_for_user(session, user.id)
+    if not subs:
+        await call.message.answer(
+            subscriptions_list_intro_html() + "\n\n<i>Активных подписок нет.</i>",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=subscriptions_back_kb(),
+        )
+        await call.answer()
+        return
+    lines = []
+    for s in subs:
+        loc = LOCATION_TITLES.get(s.location_code, s.location_code.upper())
+        lines.append(
+            f"<b>{html_escape.escape(loc)}</b> — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n"
+            f"{subscription_url_pre_only(s.subscription_url)}"
+        )
+    await call.message.answer(
+        subscriptions_list_intro_html() + "\n\n" + "\n\n".join(lines),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=subscriptions_back_kb(),
+    )
     await call.answer()
 
 
@@ -230,18 +388,22 @@ async def callback_my(call: CallbackQuery) -> None:
             return
         subs = await list_active_subscriptions_for_user(session, user.id)
     if not subs:
-        await call.message.answer("Активных подписок нет.")
+        await call.message.answer(
+            subscriptions_list_intro_html() + "\n\n<i>Активных подписок нет.</i>",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
         await call.answer()
         return
     lines = []
     for s in subs:
         loc = LOCATION_TITLES.get(s.location_code, s.location_code.upper())
         lines.append(
-            f"• {loc} — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n\n"
+            f"<b>{html_escape.escape(loc)}</b> — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n"
             f"{subscription_url_pre_only(s.subscription_url)}"
         )
     await call.message.answer(
-        "Ваши активные подписки:\n\n" + "\n\n".join(lines),
+        subscriptions_list_intro_html() + "\n\n" + "\n\n".join(lines),
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -257,17 +419,21 @@ async def cmd_my(message: Message) -> None:
             return
         subs = await list_active_subscriptions_for_user(session, user.id)
     if not subs:
-        await message.answer("Активных подписок нет.")
+        await message.answer(
+            subscriptions_list_intro_html() + "\n\n<i>Активных подписок нет.</i>",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
         return
     lines = []
     for s in subs:
         loc = LOCATION_TITLES.get(s.location_code, s.location_code.upper())
         lines.append(
-            f"• {loc} — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n\n"
+            f"<b>{html_escape.escape(loc)}</b> — до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n"
             f"{subscription_url_pre_only(s.subscription_url)}"
         )
     await message.answer(
-        "Ваши активные подписки:\n\n" + "\n\n".join(lines),
+        subscriptions_list_intro_html() + "\n\n" + "\n\n".join(lines),
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
