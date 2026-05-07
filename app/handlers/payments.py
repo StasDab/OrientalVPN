@@ -1,23 +1,89 @@
+import logging
+
 from aiogram import F, Router
-from aiogram.types import Message, PreCheckoutQuery
+from aiogram.types import CallbackQuery, Message, PreCheckoutQuery
 
 from app.config import settings
 from app.db.repositories import (
-    create_event,
-    create_or_extend_subscription,
     create_payment,
     get_or_create_user,
     get_payment_by_tg_charge,
-    update_payment_status,
 )
 from app.db.session import SessionLocal
-from app.plans import PLAN_MAP, decode_invoice_payload, plan_days
-from app.services.node_registry import pick_node_for_location, pick_primary_node
-from app.services.retry import with_retry
-from app.services.vpn_provider import MarzbanAdapter
+from app.payment_fulfillment import fulfill_paid_payment_row
+from app.plans import PLAN_MAP, decode_invoice_payload
+from app.services.yookassa import YookassaError, get_payment as yk_get_payment
 from app.telegram_format import subscription_url_pre_block
 
+log = logging.getLogger(__name__)
+
 router = Router()
+
+
+@router.callback_query(F.data.startswith("yk:"))
+async def yookassa_check_callback(call: CallbackQuery) -> None:
+    if not settings.use_yookassa:
+        await call.answer()
+        return
+    if not call.from_user:
+        await call.answer()
+        return
+    pay_id = (call.data or "")[3:].strip()
+    if not pay_id:
+        await call.answer("Некорректный запрос.", show_alert=True)
+        return
+    try:
+        remote = await yk_get_payment(
+            shop_id=settings.yookassa_shop_id.strip(),
+            secret_key=settings.yookassa_secret_key.strip(),
+            payment_id=pay_id,
+        )
+    except YookassaError:
+        log.exception("yookassa_get_payment_failed", extra={"payment_id": pay_id})
+        await call.answer("Не удалось связаться с ЮKassa.", show_alert=True)
+        return
+
+    status = (remote.get("status") or "").lower()
+    if status != "succeeded":
+        await call.answer("Оплата ещё не подтверждена. Подождите или завершите оплату.", show_alert=True)
+        return
+
+    async with SessionLocal() as session:
+        pay_row = await get_payment_by_tg_charge(session, f"yookassa:{pay_id}")
+        if not pay_row:
+            await call.answer("Платёж не найден в боте.", show_alert=True)
+            return
+        inv = decode_invoice_payload(pay_row.invoice_payload or "")
+        if not inv or inv.buyer_tg_id != call.from_user.id:
+            await call.answer("Это не ваш платёж.", show_alert=True)
+            return
+        outcome = await fulfill_paid_payment_row(session, pay_row, buyer_tg_id=inv.buyer_tg_id)
+        await session.commit()
+
+    await call.answer()
+
+    if outcome.ok and outcome.subscription_url:
+        await call.message.answer(
+            "Оплата подтверждена.\n"
+            "Доступ: все серверы (одна подписка)"
+            f"{subscription_url_pre_block(outcome.subscription_url)}\n"
+            "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль.",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        return
+    if outcome.already_done:
+        await call.message.answer("Доступ уже был выдан ранее. Смотрите «Мои подписки» (/my).")
+        return
+    if outcome.no_node:
+        await call.message.answer(
+            "Оплата получена, но сейчас нет свободной ноды. Выдача повторится автоматически."
+        )
+        return
+    if outcome.marzban_error:
+        await call.message.answer(
+            "Оплата получена, временно не удалось выдать доступ. Повтор попытки — автоматически."
+        )
 
 
 @router.pre_checkout_query()
@@ -55,10 +121,7 @@ async def successful_payment(message: Message) -> None:
         await message.answer("Ошибка: платёж оформлен не с вашего аккаунта.")
         return
 
-    plan_code = inv.plan_code
-    location_code = inv.location_code
     buyer_tg_id = inv.buyer_tg_id
-    plan_days_val = plan_days(plan_code)
 
     async with SessionLocal() as session:
         existing = await get_payment_by_tg_charge(session, payment.telegram_payment_charge_id)
@@ -90,83 +153,30 @@ async def successful_payment(message: Message) -> None:
         )
         await session.flush()
 
-        selected_node = (
-            pick_primary_node()
-            if location_code == "all"
-            else pick_node_for_location(location_code)
-        )
-        if not selected_node:
-            await create_event(
-                session,
-                "provision_payment",
-                {
-                    "payment_id": pending_row.id,
-                    "tg_user_id": buyer_tg_id,
-                    "plan_code": plan_code,
-                    "location_code": location_code,
-                    "plan_days": plan_days_val,
-                },
-            )
-            await session.commit()
-            await message.answer(
-                "Оплата получена, но сейчас нет доступной ноды в выбранной локации. "
-                "Выдача доступа повторится автоматически; статус можно смотреть в «Мои подписки» (/my)."
-            )
-            return
-
-        provider = MarzbanAdapter(
-            panel_url=selected_node.api_url,
-            username=settings.panel_username,
-            password=settings.panel_password,
-        )
-        try:
-            result = await with_retry(
-                lambda: provider.provision_access(
-                    buyer_tg_id,
-                    location_code,
-                    node=selected_node,
-                    days=plan_days_val,
-                ),
-                retries=settings.provision_retries,
-                base_delay_seconds=1.0,
-            )
-        except Exception:
-            await create_event(
-                session,
-                "provision_payment",
-                {
-                    "payment_id": pending_row.id,
-                    "tg_user_id": buyer_tg_id,
-                    "plan_code": plan_code,
-                    "location_code": location_code,
-                    "plan_days": plan_days_val,
-                },
-            )
-            await session.commit()
-            await message.answer(
-                "Оплата получена, но временно не удалось выдать доступ (ошибка панели VPN). "
-                "Повторная попытка выполнится автоматически."
-            )
-            return
-
-        await create_or_extend_subscription(
-            session=session,
-            user_id=db_user.id,
-            external_user_id=result.external_user_id,
-            subscription_url=result.subscription_url,
-            location_code="all",
-            node_api_url=selected_node.api_url,
-            duration_days=plan_days_val,
-            panel_ends_at=result.ends_at,
-        )
-        await update_payment_status(session, pending_row.id, "paid")
+        outcome = await fulfill_paid_payment_row(session, pending_row, buyer_tg_id=buyer_tg_id)
         await session.commit()
 
-    await message.answer(
-        "Оплата подтверждена.\n"
-        "Доступ: все серверы (одна подписка)"
-        f"{subscription_url_pre_block(result.subscription_url)}\n"
-        "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль.",
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
+    if outcome.ok and outcome.subscription_url:
+        await message.answer(
+            "Оплата подтверждена.\n"
+            "Доступ: все серверы (одна подписка)"
+            f"{subscription_url_pre_block(outcome.subscription_url)}\n"
+            "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль.",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        return
+    if outcome.already_done:
+        await message.answer("Платёж уже обработан, доступ ранее выдан.")
+        return
+    if outcome.no_node:
+        await message.answer(
+            "Оплата получена, но сейчас нет доступной ноды в выбранной локации. "
+            "Выдача доступа повторится автоматически; статус можно смотреть в «Мои подписки» (/my)."
+        )
+        return
+    if outcome.marzban_error:
+        await message.answer(
+            "Оплата получена, но временно не удалось выдать доступ (ошибка панели VPN). "
+            "Повторная попытка выполнится автоматически."
+        )

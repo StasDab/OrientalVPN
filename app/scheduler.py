@@ -12,13 +12,16 @@ from app.db.repositories import (
     list_all_user_tg_ids,
     list_expired_active_subscriptions,
     list_pending_provision_events,
+    list_pending_yookassa_payments,
     list_subscriptions_needing_reminder,
     mark_reminder_sent,
     touch_event,
     update_payment_status,
 )
 from app.db.session import SessionLocal
-from app.plans import LOCATION_TITLES, plan_days
+from app.plans import LOCATION_TITLES, decode_invoice_payload, plan_days
+from app.payment_fulfillment import fulfill_paid_payment_row
+from app.services.yookassa import get_payment as yk_get_payment
 from app.services.node_registry import pick_node_for_location, pick_primary_node
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
@@ -161,6 +164,43 @@ async def _process_provision_events(bot: Bot) -> None:
         await session.commit()
 
 
+async def _poll_yookassa_payments(bot: Bot) -> None:
+    if not settings.use_yookassa:
+        return
+    async with SessionLocal() as session:
+        rows = await list_pending_yookassa_payments(session, 40)
+        for pay in rows:
+            try:
+                remote = await yk_get_payment(
+                    shop_id=settings.yookassa_shop_id.strip(),
+                    secret_key=settings.yookassa_secret_key.strip(),
+                    payment_id=pay.provider_charge_id,
+                )
+            except Exception:
+                log.exception("yookassa_poll_get_failed", extra={"id": pay.provider_charge_id})
+                continue
+            if (remote.get("status") or "").lower() != "succeeded":
+                continue
+            inv = decode_invoice_payload(pay.invoice_payload or "")
+            if not inv:
+                continue
+            outcome = await fulfill_paid_payment_row(session, pay, buyer_tg_id=inv.buyer_tg_id)
+            await session.commit()
+            if outcome.ok and outcome.subscription_url:
+                try:
+                    await bot.send_message(
+                        inv.buyer_tg_id,
+                        "Оплата подтверждена (ЮKassa).\n"
+                        "Доступ: все серверы (одна подписка)"
+                        f"{subscription_url_pre_block(outcome.subscription_url)}\n"
+                        "Инструкция: клиент → вставить ссылку → обновить профиль.",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    log.warning("yookassa_notify_failed", extra={"tg_id": inv.buyer_tg_id})
+
+
 async def background_jobs(bot: Bot) -> None:
     while True:
         try:
@@ -172,7 +212,7 @@ async def background_jobs(bot: Bot) -> None:
         except Exception:
             log.exception("reminders_failed")
         try:
-            await _process_provision_events(bot)
+            await _poll_yookassa_payments(bot)
         except Exception:
-            log.exception("provision_events_failed")
+            log.exception("yookassa_poll_failed")
         await asyncio.sleep(settings.check_interval_minutes * 60)

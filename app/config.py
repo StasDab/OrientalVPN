@@ -9,6 +9,12 @@ class Settings(BaseSettings):
     bot_token: str = Field(alias="BOT_TOKEN")
     provider_token: str = Field(default="", alias="PROVIDER_TOKEN")
     payments_provider_name: str = Field(default="telegram-payments", alias="PAYMENTS_PROVIDER_NAME")
+    # telegram — Telegram Payments (PROVIDER_TOKEN); yookassa — ЮKassa API (секретный ключ + shopId).
+    payment_provider: str = Field(default="telegram", alias="PAYMENT_PROVIDER")
+    yookassa_shop_id: str = Field(default="", alias="YOOKASSA_SHOP_ID")
+    yookassa_secret_key: str = Field(default="", alias="YOOKASSA_SECRET_KEY")
+    # HTTPS URL возврата после оплаты (например https://t.me/YourBot или страница сайта).
+    yookassa_return_url: str = Field(default="", alias="YOOKASSA_RETURN_URL")
     admin_ids: str = Field(default="", alias="ADMIN_IDS")
 
     database_url: str = Field(alias="DATABASE_URL")
@@ -38,6 +44,14 @@ class Settings(BaseSettings):
     @property
     def admin_id_set(self) -> set[int]:
         return {int(v.strip()) for v in self.admin_ids.split(",") if v.strip()}
+
+    @property
+    def use_yookassa(self) -> bool:
+        return (
+            self.payment_provider.strip().lower() == "yookassa"
+            and bool(self.yookassa_shop_id.strip())
+            and bool(self.yookassa_secret_key.strip())
+        )
 
     @property
     def vpn_nodes(self) -> list[dict]:

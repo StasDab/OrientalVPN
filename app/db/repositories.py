@@ -65,6 +65,16 @@ async def update_payment_status(session: AsyncSession, payment_id: int, status: 
     await session.execute(update(Payment).where(Payment.id == payment_id).values(status=status))
 
 
+async def list_pending_yookassa_payments(session: AsyncSession, limit: int = 50) -> list[Payment]:
+    row = await session.execute(
+        select(Payment)
+        .where(Payment.status == "pending_yookassa")
+        .order_by(Payment.id.desc())
+        .limit(limit)
+    )
+    return list(row.scalars().all())
+
+
 async def create_or_extend_subscription(
     session: AsyncSession,
     user_id: int,

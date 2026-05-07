@@ -5,11 +5,12 @@ import re
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, LabeledPrice, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, LabeledPrice, Message, InlineKeyboardButton
 
 from app.config import settings
 from app.db.repositories import (
     create_or_extend_subscription,
+    create_payment,
     get_or_create_user,
     get_user_by_tg_id,
     list_active_subscriptions_for_user,
@@ -32,6 +33,7 @@ from app.services.node_registry import (
 from app.services.server_selector import pick_share_link_for_node
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
+from app.services.yookassa import YookassaError, create_redirect_payment
 from app.telegram_format import (
     jammer_bypass_help_html,
     subscription_url_pre_block,
@@ -342,11 +344,85 @@ async def callback_plan(call: CallbackQuery) -> None:
     await ack_callback(call)
     await nav_edit(
         msg,
-        "💳 <b>Счёт</b>\nОплатите сообщение со счётом ниже — доступ ко <b>всем серверам</b> в одной подписке.",
+        "💳 <b>Оплата</b>\nВыберите способ ниже — доступ ко <b>всем серверам</b> в одной подписке.",
         plans_kb(back_to="buy"),
     )
 
     payload = f"{plan_code}:all:{call.from_user.id}"
+
+    if settings.use_yookassa:
+        ret = (settings.yookassa_return_url or "").strip()
+        if not ret:
+            await call.message.answer(
+                "ЮKassa включена, но не задан <code>YOOKASSA_RETURN_URL</code> в .env "
+                "(HTTPS, например <code>https://t.me/…</code>).",
+                parse_mode="HTML",
+            )
+            return
+        amount_rub = f"{plan['amount'] / 100:.2f}"
+        try:
+            yk_data = await create_redirect_payment(
+                shop_id=settings.yookassa_shop_id.strip(),
+                secret_key=settings.yookassa_secret_key.strip(),
+                amount_value_rub=amount_rub,
+                return_url=ret,
+                description=plan["title"][:128],
+                metadata={
+                    "tg_id": str(call.from_user.id),
+                    "plan_code": plan_code,
+                    "location_code": "all",
+                },
+            )
+        except YookassaError:
+            log.exception("yookassa_create_payment_failed", extra={"tg_id": call.from_user.id})
+            await call.message.answer("Не удалось создать платёж ЮKassa. Попробуйте позже.")
+            return
+        except Exception:
+            log.exception("yookassa_create_payment_unexpected", extra={"tg_id": call.from_user.id})
+            await call.message.answer("Ошибка оплаты. Попробуйте позже.")
+            return
+
+        pay_id = yk_data.get("id") or ""
+        conf = yk_data.get("confirmation") or {}
+        pay_url = conf.get("confirmation_url") or ""
+        if not pay_id or not pay_url:
+            await call.message.answer("ЮKassa вернула неполный ответ. Попробуйте позже.")
+            return
+
+        async with SessionLocal() as session:
+            db_user = await get_or_create_user(
+                session,
+                tg_id=call.from_user.id,
+                username=call.from_user.username,
+            )
+            await create_payment(
+                session=session,
+                user_id=db_user.id,
+                tg_charge_id=f"yookassa:{pay_id}",
+                provider_charge_id=pay_id,
+                amount_minor=plan["amount"],
+                currency="RUB",
+                invoice_payload=payload,
+                status="pending_yookassa",
+            )
+            await session.commit()
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Оплатить (ЮKassa)", url=pay_url)],
+                [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"yk:{pay_id}")],
+            ]
+        )
+        await call.message.answer(
+            f"💳 Счёт создан: <b>{html_escape.escape(plan['title'])}</b>\n"
+            f"Сумма: <code>{amount_rub} ₽</code>\n\n"
+            "Нажмите «Оплатить», завершите оплату на сайте ЮKassa, затем «Проверить оплату».",
+            reply_markup=kb,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        return
+
     prices = [LabeledPrice(label=plan["title"], amount=plan["amount"])]
     await call.bot.send_invoice(
         chat_id=msg.chat.id,
