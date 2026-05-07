@@ -12,6 +12,8 @@ class VpnNode:
     inbound_tag: str | None = None
     # Доп. поля proxies.vless (например {"flow": "xtls-rprx-vision"}), перекрывают MARZBAN_VLESS_FLOW.
     vless: dict | None = None
+    # Подстрока для выбора одной vless-ссылки из GET /api/user (поле links), напр. публичный IP узла "77.110.".
+    link_match: str | None = None
 
 
 def select_best_node(nodes: list[VpnNode], location_code: str) -> VpnNode | None:

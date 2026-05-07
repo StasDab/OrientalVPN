@@ -11,8 +11,8 @@ from app.db.repositories import (
     update_payment_status,
 )
 from app.db.session import SessionLocal
-from app.plans import LOCATION_TITLES, PLAN_MAP, decode_invoice_payload, plan_days
-from app.services.node_registry import pick_node_for_location
+from app.plans import PLAN_MAP, decode_invoice_payload, plan_days
+from app.services.node_registry import pick_node_for_location, pick_primary_node
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
 from app.telegram_format import subscription_url_pre_block
@@ -90,7 +90,11 @@ async def successful_payment(message: Message) -> None:
         )
         await session.flush()
 
-        selected_node = pick_node_for_location(location_code)
+        selected_node = (
+            pick_primary_node()
+            if location_code == "all"
+            else pick_node_for_location(location_code)
+        )
         if not selected_node:
             await create_event(
                 session,
@@ -150,7 +154,7 @@ async def successful_payment(message: Message) -> None:
             user_id=db_user.id,
             external_user_id=result.external_user_id,
             subscription_url=result.subscription_url,
-            location_code=location_code,
+            location_code="all",
             node_api_url=selected_node.api_url,
             duration_days=plan_days_val,
         )
@@ -159,7 +163,7 @@ async def successful_payment(message: Message) -> None:
 
     await message.answer(
         "Оплата подтверждена.\n"
-        f"Локация: {LOCATION_TITLES.get(location_code, location_code.upper())}"
+        "Доступ: все серверы (одна подписка)"
         f"{subscription_url_pre_block(result.subscription_url)}\n"
         "Инструкция: откройте клиент, вставьте ссылку подписки и обновите профиль.",
         parse_mode="HTML",

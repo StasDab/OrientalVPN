@@ -19,7 +19,7 @@ from app.db.repositories import (
 )
 from app.db.session import SessionLocal
 from app.plans import LOCATION_TITLES, plan_days
-from app.services.node_registry import pick_node_for_location
+from app.services.node_registry import pick_node_for_location, pick_primary_node
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
 from app.telegram_format import subscription_url_pre_block
@@ -91,7 +91,11 @@ async def _process_provision_events(bot: Bot) -> None:
                 await touch_event(session, ev.id, status="done", retries=ev.retries)
                 continue
 
-            node = pick_node_for_location(location_code)
+            node = (
+                pick_primary_node()
+                if location_code == "all"
+                else pick_node_for_location(location_code)
+            )
             if not node:
                 nret = ev.retries + 1
                 if nret >= settings.event_max_retries:
@@ -135,7 +139,7 @@ async def _process_provision_events(bot: Bot) -> None:
                 user_id=db_user.id,
                 external_user_id=result.external_user_id,
                 subscription_url=result.subscription_url,
-                location_code=location_code,
+                location_code="all",
                 node_api_url=node.api_url,
                 duration_days=plan_days_val,
             )

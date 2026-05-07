@@ -14,6 +14,7 @@ PLAN_MAP: dict[str, dict[str, Any]] = {
 }
 
 LOCATION_TITLES: dict[str, str] = {
+    "all": "Все серверы",
     "de": "Germany",
     "nl": "Netherlands",
     "se": "EU — Stockholm",
@@ -44,7 +45,12 @@ def decode_invoice_payload(raw: str) -> InvoicePayload | None:
         plan_code, location_code, uid_s = parts[0], parts[1].lower(), parts[2]
         if plan_code not in PLAN_MAP:
             return None
-        if location_code not in available_location_codes():
+        locs = available_location_codes()
+        if location_code == "all":
+            if not locs:
+                return None
+            location_code = "all"
+        elif location_code not in locs:
             return None
         buyer_tg_id = int(uid_s)
     except (ValueError, TypeError):
