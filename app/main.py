@@ -7,10 +7,12 @@ from app.config import settings
 from app.handlers import admin, payments, user
 from app.logging_setup import setup_logging
 from app.scheduler import background_jobs
+from app.subscription_gate_http import start_subscription_gate_server, stop_subscription_gate_server
 
 
 async def main() -> None:
     setup_logging()
+    await start_subscription_gate_server()
     bot = Bot(token=settings.bot_token)
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -19,7 +21,10 @@ async def main() -> None:
     dp.include_router(admin.router)
 
     asyncio.create_task(background_jobs(bot))
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await stop_subscription_gate_server()
 
 
 if __name__ == "__main__":

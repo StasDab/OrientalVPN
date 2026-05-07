@@ -17,7 +17,9 @@ def _load_dotenv_early() -> None:
     except ImportError:
         return
     root = Path(__file__).resolve().parents[1]
+    # Корень репозитория: .env ИЛИ вложенный деплой только app/ → app/.env
     load_dotenv(root / ".env", override=False)
+    load_dotenv(root / "app" / ".env", override=False)
 
 
 _load_dotenv_early()

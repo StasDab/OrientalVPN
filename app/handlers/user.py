@@ -153,7 +153,7 @@ async def callback_help(call: CallbackQuery) -> None:
 async def cmd_buy(message: Message) -> None:
     await message.answer(
         tariffs_select_html(),
-        reply_markup=plans_kb(back_to="menu_home"),
+        reply_markup=plans_kb(back_to="menu_home", payment_step_back="buy"),
         parse_mode="HTML",
     )
 
@@ -168,7 +168,7 @@ async def callback_buy(call: CallbackQuery) -> None:
     await nav_edit(
         msg,
         tariffs_select_html(),
-        plans_kb(back_to="menu_home"),
+        plans_kb(back_to="menu_home", payment_step_back="buy"),
     )
 
 
@@ -194,7 +194,8 @@ def _profile_text(u) -> str:
         f"Username: {uname}\n"
         "<b>Email (для чеков):</b> <i>не указан — добавим после подключения ЮKassa/Telegram Payments</i>\n\n"
         "💰 <b>Баланс:</b> <code>0 ₽</code>\n\n"
-        "💡 <i>Пополните баланс через «Купить» или активируйте промокод, когда функция будет доступна.</i>"
+        "💡 <i>«Пополнить баланс» открывает те же тарифы VPN — оплата через Telegram/Payments; "
+        "отдельный кошелёк в боте пока не ведётся. Промокоды — позже.</i>"
     )
 
 
@@ -247,7 +248,7 @@ async def profile_topup(call: CallbackQuery) -> None:
     await nav_edit(
         msg,
         tariffs_select_html(),
-        plans_kb(back_to="profile"),
+        plans_kb(back_to="profile", payment_step_back="profile"),
     )
 
 
@@ -331,7 +332,10 @@ async def callback_plan(call: CallbackQuery) -> None:
         await ack_callback(call, text="Откройте меню: /start", show_alert=True)
         return
 
-    plan_code = call.data.split(":")[1]
+    parts = (call.data or "").split(":")
+    # plan:<code> или plan:<code>:buy|profile
+    plan_code = parts[1] if len(parts) > 1 else ""
+    payment_step_back = parts[2] if len(parts) > 2 and parts[2] in ("buy", "profile") else "buy"
     if not available_location_codes():
         await ack_callback(call)
         await nav_edit(msg, NO_VPN_NODES_TEXT, main_menu_kb(), parse_mode=None)
@@ -345,7 +349,7 @@ async def callback_plan(call: CallbackQuery) -> None:
     await nav_edit(
         msg,
         "💳 <b>Оплата</b>\nВыберите способ ниже — доступ ко <b>всем серверам</b> в одной подписке.",
-        plans_kb(back_to="buy"),
+        plans_kb(back_to=payment_step_back, payment_step_back=payment_step_back),
     )
 
     payload = f"{plan_code}:all:{call.from_user.id}"
@@ -423,6 +427,16 @@ async def callback_plan(call: CallbackQuery) -> None:
         )
         return
 
+    if not (settings.provider_token or "").strip():
+        await call.message.answer(
+            "Платежи Telegram не настроены: в .env задайте <code>PROVIDER_TOKEN</code> "
+            "(BotFather → бот → Payments, токен после привязки ЮKassa) и перезапустите бота. "
+            "Должно быть <code>PAYMENT_PROVIDER=telegram</code>.",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        return
+
     prices = [LabeledPrice(label=plan["title"], amount=plan["amount"])]
     await call.bot.send_invoice(
         chat_id=msg.chat.id,
@@ -487,7 +501,7 @@ async def _run_trial(message: Message, tg_user) -> None:
             await message.answer("Не удалось выдать пробный доступ. Попробуйте позже.")
             return
 
-        await create_or_extend_subscription(
+        sub_row = await create_or_extend_subscription(
             session=session,
             user_id=user.id,
             external_user_id=result.external_user_id,
@@ -499,12 +513,13 @@ async def _run_trial(message: Message, tg_user) -> None:
         )
         await mark_trial_used(session, user.id)
         await session.commit()
+        public_sub_url = sub_row.subscription_url
 
     hours = settings.trial_hours
     await message.answer(
         f"✅ Пробный доступ на <b>~{hours} ч.</b>\n"
         "В подписке сразу <b>все серверы</b>. Отдельную ссылку на один узел можно взять в «Выбрать сервер».\n"
-        f"{subscription_url_pre_block(result.subscription_url)}\n"
+        f"{subscription_url_pre_block(public_sub_url)}\n"
         "Инструкция: клиент → вставить ссылку → обновить профиль.",
         parse_mode="HTML",
         disable_web_page_preview=True,

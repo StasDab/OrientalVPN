@@ -122,7 +122,7 @@ async def fulfill_paid_payment_row(
         await update_payment_status(session, pay_row.id, "pending_provision")
         return ProvisionOutcome(marzban_error=True)
 
-    await create_or_extend_subscription(
+    sub_row = await create_or_extend_subscription(
         session=session,
         user_id=pay_row.user_id,
         external_user_id=result.external_user_id,
@@ -133,4 +133,4 @@ async def fulfill_paid_payment_row(
         panel_ends_at=result.ends_at,
     )
     await update_payment_status(session, pay_row.id, "paid")
-    return ProvisionOutcome(ok=True, subscription_url=result.subscription_url)
+    return ProvisionOutcome(ok=True, subscription_url=sub_row.subscription_url)

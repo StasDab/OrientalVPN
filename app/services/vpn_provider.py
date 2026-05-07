@@ -144,6 +144,9 @@ class MarzbanAdapter:
         # Небольшой запас: на некоторых инсталляциях/при дрейфе времени expire может восприниматься как "в прошлом".
         expire_at = utc_timestamp_after(delta) + int(settings.marzban_expire_skew_seconds or 0)
         inbound_tag, vless_settings = marzban_provision_options(node, location_code)
+        limit_ip = int(settings.marzban_vless_limit_ip or 0)
+        if limit_ip > 0:
+            vless_settings = {**vless_settings, "limitIp": limit_ip}
 
         api_base = (node.api_url if node else self.panel_url).rstrip("/")
         inbound_tags = all_vless_inbound_tags_same_panel(api_base)

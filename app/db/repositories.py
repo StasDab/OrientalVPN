@@ -7,6 +7,7 @@ from app.datetime_util import utc_now_naive
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Event, Payment, Subscription, User
+from app.subscription_urls import build_subscription_urls
 
 
 async def get_or_create_user(session: AsyncSession, tg_id: int, username: str | None) -> User:
@@ -99,9 +100,18 @@ async def create_or_extend_subscription(
     )
     current = row.scalars().first()
     now = utc_now_naive()
+
+    public_url, upstream, gate_token, max_d = build_subscription_urls(
+        subscription_url,
+        existing_gate_token=current.sub_gate_token if current else None,
+    )
+
     if current and current.ends_at > now:
         current.ends_at = current.ends_at + delta
-        current.subscription_url = subscription_url
+        current.subscription_url = public_url
+        current.upstream_subscription_url = upstream
+        current.sub_gate_token = gate_token
+        current.max_devices = max_d
         current.location_code = location_code
         current.external_user_id = external_user_id
         current.node_api_url = node_api_url
@@ -114,7 +124,10 @@ async def create_or_extend_subscription(
     sub = Subscription(
         user_id=user_id,
         location_code=location_code,
-        subscription_url=subscription_url,
+        subscription_url=public_url,
+        upstream_subscription_url=upstream,
+        sub_gate_token=gate_token,
+        max_devices=max_d,
         starts_at=now,
         ends_at=new_end,
         status="active",

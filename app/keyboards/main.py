@@ -30,7 +30,16 @@ def profile_kb() -> InlineKeyboardMarkup:
     )
 
 
-def plans_kb(*, back_to: str = "menu_home") -> InlineKeyboardMarkup:
+def plans_kb(
+    *,
+    back_to: str = "menu_home",
+    payment_step_back: str = "buy",
+) -> InlineKeyboardMarkup:
+    """
+    back_to — куда ведёт «Назад» на экране списка тарифов.
+    payment_step_back — откуда пришли к оплате (buy | profile): тот же токен в callback plan:*,
+      чтобы после выбора тарифа «Назад» возвращал к списку тарифов или в профиль.
+    """
     labels = {
         "1m": "1 месяц — 199 ₽",
         "3m": "3 месяца — 530 ₽",
@@ -39,7 +48,7 @@ def plans_kb(*, back_to: str = "menu_home") -> InlineKeyboardMarkup:
     }
     order = ("1m", "3m", "6m", "12m")
     rows = [
-        [InlineKeyboardButton(text=labels[code], callback_data=f"plan:{code}")]
+        [InlineKeyboardButton(text=labels[code], callback_data=f"plan:{code}:{payment_step_back}")]
         for code in order
         if code in PLAN_MAP
     ]

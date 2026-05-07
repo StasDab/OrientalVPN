@@ -137,7 +137,7 @@ async def _process_provision_events(bot: Bot) -> None:
                 await touch_event(session, ev.id, status="failed", retries=ev.retries)
                 continue
 
-            await create_or_extend_subscription(
+            sub_row = await create_or_extend_subscription(
                 session=session,
                 user_id=db_user.id,
                 external_user_id=result.external_user_id,
@@ -153,7 +153,7 @@ async def _process_provision_events(bot: Bot) -> None:
                 await bot.send_message(
                     tg_user_id,
                     "Доступ выдан после ожидания."
-                    f"{subscription_url_pre_block(result.subscription_url)}\n"
+                    f"{subscription_url_pre_block(sub_row.subscription_url)}\n"
                     "Инструкция: клиент → вставить ссылку → обновить профиль.",
                     parse_mode="HTML",
                     disable_web_page_preview=True,

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -24,13 +24,30 @@ class Subscription(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     location_code: Mapped[str] = mapped_column(String(32))
+    # Публичная ссылка (шлюз /sub/{token} или прямой Marzban).
     subscription_url: Mapped[str] = mapped_column(Text)
+    # Реальная ссылка Marzban /sub/... — только если включён шлюз.
+    upstream_subscription_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sub_gate_token: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
+    max_devices: Mapped[int] = mapped_column(Integer, default=2)
     starts_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     ends_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
     external_user_id: Mapped[str] = mapped_column(String(255), index=True)
     node_api_url: Mapped[str] = mapped_column(String(500))
     reminder_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class SubscriptionDevice(Base):
+    __tablename__ = "subscription_devices"
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "fingerprint_sha256", name="uq_subscription_device_fp"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    subscription_id: Mapped[int] = mapped_column(ForeignKey("subscriptions.id", ondelete="CASCADE"), index=True)
+    fingerprint_sha256: Mapped[str] = mapped_column(String(64))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Payment(Base):

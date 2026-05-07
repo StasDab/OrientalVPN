@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     marzban_reality_fingerprint: str = Field(default="qq", alias="MARZBAN_REALITY_FINGERPRINT")
     # Запас по времени для expire (страховка от рассинхрона времени/округлений).
     marzban_expire_skew_seconds: int = Field(default=300, ge=0, le=3600, alias="MARZBAN_EXPIRE_SKEW_SECONDS")
+    # Ограничение одновременных IP в proxies.vless (ключ limitIp в JSON к POST /api/user). 0 = не слать.
+    marzban_vless_limit_ip: int = Field(default=0, ge=0, le=256, alias="MARZBAN_VLESS_LIMIT_IP")
+
+    # Шлюз подписки: публичный URL с /sub/{uuid} (HTTPS за nginx), бот слушает SUBSCRIPTION_GATE_LISTEN_*.
+    subscription_gate_public_base: str = Field(default="", alias="SUBSCRIPTION_GATE_PUBLIC_BASE")
+    subscription_max_devices: int = Field(default=2, ge=1, le=50, alias="SUBSCRIPTION_MAX_DEVICES")
+    subscription_gate_listen_host: str = Field(default="0.0.0.0", alias="SUBSCRIPTION_GATE_LISTEN_HOST")
+    subscription_gate_listen_port: int = Field(default=8095, ge=1, le=65535, alias="SUBSCRIPTION_GATE_LISTEN_PORT")
     # Подменить только хост у /sub/... (отдельный домен подписки; nginx → Marzban).
     subscription_url_prefix: str = Field(default="", alias="SUBSCRIPTION_URL_PREFIX")
 
