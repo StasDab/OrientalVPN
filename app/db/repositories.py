@@ -75,6 +75,7 @@ async def create_or_extend_subscription(
     duration_days: int | None = None,
     *,
     duration_hours: int | None = None,
+    panel_ends_at: datetime | None = None,
 ) -> Subscription:
     if duration_hours is not None:
         delta = timedelta(hours=duration_hours)
@@ -96,12 +97,16 @@ async def create_or_extend_subscription(
         current.node_api_url = node_api_url
         return current
 
+    new_end = panel_ends_at if panel_ends_at is not None else (now + delta)
+    if new_end <= now:
+        new_end = now + delta
+
     sub = Subscription(
         user_id=user_id,
         location_code=location_code,
         subscription_url=subscription_url,
         starts_at=now,
-        ends_at=now + delta,
+        ends_at=new_end,
         status="active",
         external_user_id=external_user_id,
         node_api_url=node_api_url,

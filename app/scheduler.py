@@ -142,6 +142,7 @@ async def _process_provision_events(bot: Bot) -> None:
                 location_code="all",
                 node_api_url=node.api_url,
                 duration_days=plan_days_val,
+                panel_ends_at=result.ends_at,
             )
             await update_payment_status(session, payment_id, "paid")
             await touch_event(session, ev.id, status="done", retries=ev.retries)

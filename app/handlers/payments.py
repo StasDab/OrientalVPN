@@ -157,6 +157,7 @@ async def successful_payment(message: Message) -> None:
             location_code="all",
             node_api_url=selected_node.api_url,
             duration_days=plan_days_val,
+            panel_ends_at=result.ends_at,
         )
         await update_payment_status(session, pending_row.id, "paid")
         await session.commit()
