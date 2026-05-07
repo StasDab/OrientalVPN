@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Выставить в контейнере Postgres пароль пользователя postgres такой же, как в DATABASE_URL в .env.
+Выставить в контейнере Postgres пароль роли такой же, как в DATABASE_URL в .env
+(имя роли берётся из URL: user:password@host, не только postgres).
 
 Запуск на VPS (из корня репозитория, где лежит .env):
   /opt/myvpn/.venv/bin/python scripts/fix_postgres_password.py
@@ -21,6 +22,13 @@ def _escape_sql_literal(s: str) -> str:
     return s.replace("'", "''")
 
 
+def _quote_pg_identifier(name: str) -> str:
+    """Безопасное имя роли для ALTER USER … (простые идентификаторы или в кавычках)."""
+    if re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name):
+        return name
+    return '"' + name.replace('"', '""') + '"'
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     env_path = root / ".env"
@@ -39,10 +47,15 @@ def main() -> int:
         print("В DATABASE_URL нет пароля (user:pass@)", file=sys.stderr)
         return 1
     pw = unquote_plus(parsed.password)
+    db_user = unquote_plus(parsed.username) if parsed.username else "postgres"
     container = os.environ.get("POSTGRES_CONTAINER", "myvpn-postgres")
-    sql = f"ALTER USER postgres WITH PASSWORD '{_escape_sql_literal(pw)}';"
+    ident = _quote_pg_identifier(db_user)
+    sql = f"ALTER USER {ident} WITH PASSWORD '{_escape_sql_literal(pw)}';"
     cmd = ["docker", "exec", container, "psql", "-U", "postgres", "-d", "postgres", "-c", sql]
-    print(f"Обновляю пароль postgres в контейнере {container} по паролю из DATABASE_URL …")
+    print(
+        f"Обновляю пароль роли {db_user!r} в контейнере {container} по паролю из DATABASE_URL …",
+        flush=True,
+    )
     try:
         subprocess.run(cmd, check=True)
     except FileNotFoundError:
