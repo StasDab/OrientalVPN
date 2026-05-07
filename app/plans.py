@@ -19,6 +19,8 @@ LOCATION_TITLES: dict[str, str] = {
     "nl": "Netherlands",
     "se": "EU — Stockholm",
     "eu_se": "EU — Stockholm",
+    "fi": "Finland",
+    "fi_hel": "Finland — Helsinki",
     "us": "USA — Charlotte (Sharlott)",
     "us_nc": "USA — Charlotte (Sharlott)",
 }
