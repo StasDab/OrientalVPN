@@ -24,7 +24,7 @@
 - Тарифы и локации **DE / NL / SE** через inline-кнопки; инвойс Telegram Payments.
 - `pre_checkout_query` с проверкой суммы, валюты, payload и плательщика.
 - `successful_payment`: запись платежа, выдача через Marzban, идемпотентность; при недоступной ноде или ошибке API — очередь `events` и статус `pending_provision`.
-- Пробный период (часы из `TRIAL_HOURS`), один раз на пользователя (`users.trial_used`).
+- Пробный период (целые **часы** из `TRIAL_HOURS`, по умолчанию 3), один раз на Telegram (`users.trial_used`). Выдаётся один Marzban-пользователь `tg_*`; в конфиг добавляются **все VLESS inbound** с той же панели (см. `VPN_NODES_JSON`), чтобы одна ссылка подписки `/sub/` включала все доступные узлы сразу.
 - Фоновые задачи: отключение истёкших подписок, напоминание за `REMINDER_HOURS_BEFORE` часов, повторная выдача из очереди.
 - Админ: `/stats`, `/servers`, `/add_days <tg_id> <days>`, `/revoke <tg_id>`, `/broadcast` (подтверждение кнопками), `/cancel`.
 - `MarzbanAdapter`: токен, создание/продление пользователя, `set_expire`, отключение.

@@ -5,7 +5,7 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 
 from app.datetime_util import naive_utc_from_timestamp, utc_timestamp_after
-from app.services.node_registry import marzban_provision_options
+from app.services.node_registry import all_vless_inbound_tags_same_panel, marzban_provision_options
 from app.services.server_selector import VpnNode
 
 
@@ -145,14 +145,22 @@ class MarzbanAdapter:
         expire_at = utc_timestamp_after(delta) + int(settings.marzban_expire_skew_seconds or 0)
         inbound_tag, vless_settings = marzban_provision_options(node, location_code)
 
-        # Marzban UserCreate: proxies не пустой; inbounds — теги как в панели (Core / Xray).
+        api_base = (node.api_url if node else self.panel_url).rstrip("/")
+        inbound_tags = all_vless_inbound_tags_same_panel(api_base)
+        if not inbound_tags:
+            inbound_tags = [inbound_tag]
+        if inbound_tag not in inbound_tags:
+            inbound_tags.append(inbound_tag)
+            inbound_tags.sort()
+
+        # Marzban UserCreate: proxies не пустой; inbounds — теги как в Core (все узлы этой панели в одном /sub/).
         payload = {
             "username": username,
             "status": "active",
             "expire": expire_at,
             "note": f"Telegram user {tg_id}",
             "proxies": {"vless": vless_settings},
-            "inbounds": {"vless": [inbound_tag]},
+            "inbounds": {"vless": inbound_tags},
             "on_hold_timeout": 0,
             "on_hold_expire_duration": 0,
             "data_limit": 0,

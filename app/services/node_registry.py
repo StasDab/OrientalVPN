@@ -55,3 +55,21 @@ def load_nodes() -> list[VpnNode]:
 def pick_node_for_location(location_code: str) -> VpnNode | None:
     nodes = load_nodes()
     return select_best_node(nodes, location_code)
+
+
+def all_vless_inbound_tags_same_panel(panel_url: str) -> list[str]:
+    """
+    Все теги VLESS inbound с той же панели (`api_url`), что и переданная.
+    Нужно, чтобы в Marzban у tg_* были сразу все сервера в одной ссылке /sub/.
+    """
+    pu = (panel_url or "").rstrip("/").lower()
+    tags: list[str] = []
+    seen: set[str] = set()
+    for n in load_nodes():
+        if (n.api_url or "").rstrip("/").lower() != pu:
+            continue
+        tag, _ = marzban_provision_options(n, n.location_code)
+        if tag and tag not in seen:
+            seen.add(tag)
+            tags.append(tag)
+    return sorted(tags)
