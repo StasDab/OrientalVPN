@@ -87,7 +87,9 @@ async def handle_subscription_gate(request: web.Request) -> web.StreamResponse:
 
 def create_gate_app() -> web.Application:
     app = web.Application()
+    # Некоторые клиенты запрашивают URL с завершающим слэшем.
     app.router.add_get("/sub/{token}", handle_subscription_gate)
+    app.router.add_get("/sub/{token}/", handle_subscription_gate)
     return app
 
 

@@ -73,7 +73,9 @@ cd /opt/myvpn
 
 Публичная ссылка вида `https://sub.example.com/sub/<uuid>` должна проксироваться на порт шлюза (`SUBSCRIPTION_GATE_LISTEN_PORT`, по умолчанию 8095). Тестируйте **полный** URL с UUID из бота, не голый `/sub`.
 
-Пример панели Marzban: `infra/nginx-marzban-panel.conf.example`.
+**Важно для Happ / iOS:** на имени `sub.вашдомен` должен быть **валидный** TLS-сертификат (обычно Let's Encrypt через `certbot --nginx`). Иначе клиент пишет «сертификат недействителен» / незащищённое подключение и не обновляет подписку.
+
+Пример только для шлюза подписок: `infra/nginx-subscription-gate.conf.example`. Панель Marzban: `infra/nginx-marzban-panel.conf.example`.
 
 ## Деплой на VPS (кратко)
 
