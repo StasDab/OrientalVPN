@@ -544,6 +544,9 @@ async def profile_topup(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(TopupStates.waiting_amount)
     await ack_callback(call)
     mn = _effective_min_topup_rub()
+    # Доп. страховка: при send_invoice (не ЮKassa-редирект) на экране не показываем ниже 100 ₽.
+    if not settings.use_yookassa:
+        mn = max(mn, TELEGRAM_TOPUP_MIN_RUB)
     await nav_edit(
         msg,
         f"💳 <b>Пополнение баланса</b>\n"
