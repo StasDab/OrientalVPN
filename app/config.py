@@ -69,9 +69,15 @@ class Settings(BaseSettings):
     @property
     def use_yookassa(self) -> bool:
         """
-        ЮKassa: явно PAYMENT_PROVIDER=yookassa и ключи, либо (частый кейс на VPS)
-        PAYMENT_PROVIDER оставили telegram/default, ключи ЮKassa заданы, а PROVIDER_TOKEN пуст —
-        иначе бот упирается в Telegram Payments без токена.
+        REST API ЮKassa (кнопка «Оплатить» на сайте + callback yk:) — только если включено ниже.
+
+        НЕ путать с оплатой «через Telegram»: BotFather даёт провайдеру токен, в .env
+        PAYMENT_PROVIDER=telegram и PROVIDER_TOKEN=<токен BotFather>.
+        Тогда use_yookassa всегда False и бот шлёт send_invoice — ЮKassa в связке через
+        платёжного провайдера Telegram, код прямых YOOKASSA_* не нужен для этого режима.
+
+        Прямые ключи включаются при PAYMENT_PROVIDER=yookassa или при том, что указаны
+        YOOKASSA_* и провайдер telegram, но PROVIDER_TOKEN намеренно пустой.
         """
         if not (
             bool(self.yookassa_shop_id.strip())
