@@ -1,14 +1,17 @@
 import html as html_escape
 import logging
 import re
+from pathlib import Path
 from uuid import uuid4
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
+from aiogram.enums import ContentType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LabeledPrice,
@@ -127,7 +130,15 @@ NO_VPN_NODES_TEXT = (
     "После правки перезапустите сервис бота."
 )
 
-MAIN_MENU_TEXT_HTML = "🏠 <b>Главное меню</b>\nВыберите раздел:"
+START_WELCOME_HTML = (
+    "👋 <b>Добро пожаловать в OrientalVPN!</b>\n\n"
+    "✨ Твой личный ключ к безграничному интернету:\n\n"
+    "💎 <b>Высокоскоростной и Надежный VPN:</b>\n"
+    "• ⚡️Мгновенная загрузка 4K-видео и стабильный стриминг.\n"
+    "• 🛡 Обход Глушилок (DPI): Используем технологию Stealth для надежного доступа в любых условиях.\n"
+    "• 🌍 Открытие всех заблокированных ресурсов: Instagram, TikTok, Netflix, Discord.\n"
+    "• 🔒 Полная анонимность и защита трафика."
+)
 
 HELP_TEXT = (
     "Как подключиться:\n"
@@ -142,6 +153,79 @@ HELP_TEXT = (
     "ссылку вида «старт со ссылкой» от бота (подробности там же).\n\n"
     "Пробный доступ и оплата дают одну ссылку подписки со всеми серверами — она в разделе «Мои подписки»."
 )
+
+
+def _welcome_main_kb(tg_uid: int | None) -> InlineKeyboardMarkup:
+    return main_menu_kb(is_admin=_is_admin_user(tg_uid))
+
+
+async def reply_welcome_from_user_msg(message: Message) -> None:
+    """Приветственный экран после /start или аналога: баннер + подпись, либо только текст."""
+    uid = message.from_user.id if message.from_user else None
+    kb = _welcome_main_kb(uid)
+    banner_url = (settings.start_banner_url or "").strip()
+    banner_path_raw = (settings.start_banner_path or "").strip()
+
+    if banner_path_raw:
+        p = Path(banner_path_raw)
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        if p.is_file():
+            await message.answer_photo(
+                photo=FSInputFile(str(p)),
+                caption=START_WELCOME_HTML,
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            return
+    if banner_url:
+        await message.answer_photo(
+            photo=banner_url,
+            caption=START_WELCOME_HTML,
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+        return
+    await message.answer(START_WELCOME_HTML, reply_markup=kb, parse_mode="HTML")
+
+
+async def send_welcome_banner_new_message(bot: Bot, chat_id: int, *, tg_uid: int | None) -> None:
+    """Новое сообщение с приветствием (сообщение-инвойс нельзя отредактировать в текст главной)."""
+    kb = _welcome_main_kb(tg_uid)
+    banner_url = (settings.start_banner_url or "").strip()
+    banner_path_raw = (settings.start_banner_path or "").strip()
+
+    if banner_path_raw:
+        p = Path(banner_path_raw)
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        if p.is_file():
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=FSInputFile(str(p)),
+                caption=START_WELCOME_HTML,
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            return
+    if banner_url:
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=banner_url,
+            caption=START_WELCOME_HTML,
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+        return
+    await bot.send_message(chat_id=chat_id, text=START_WELCOME_HTML, parse_mode="HTML", reply_markup=kb)
+
+
+def payment_cancel_to_main_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отменить оплату", callback_data="menu_home")],
+        ]
+    )
 
 
 async def nav_edit(
@@ -247,13 +331,7 @@ async def cmd_start(message: Message, command: CommandObject) -> None:
                 referrer_tg_id=ref_tg,
             )
             await session.commit()
-    await message.answer(
-        MAIN_MENU_TEXT_HTML,
-        reply_markup=main_menu_kb(
-            is_admin=_is_admin_user(message.from_user.id if message.from_user else None),
-        ),
-        parse_mode="HTML",
-    )
+    await reply_welcome_from_user_msg(message)
 
 
 @router.message(Command("help"))
@@ -307,11 +385,12 @@ async def callback_menu_home(call: CallbackQuery, state: FSMContext) -> None:
         await ack_callback(call, text="Откройте меню: /start", show_alert=True)
         return
     await ack_callback(call)
-    await nav_edit(
-        msg,
-        MAIN_MENU_TEXT_HTML,
-        main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
-    )
+    tg_uid = call.from_user.id if call.from_user else None
+    kb = _welcome_main_kb(tg_uid)
+    if msg.content_type == ContentType.INVOICE:
+        await send_welcome_banner_new_message(call.bot, msg.chat.id, tg_uid=tg_uid)
+        return
+    await nav_edit(msg, START_WELCOME_HTML, kb)
 
 
 @router.message(Command("profile"))
@@ -399,19 +478,15 @@ async def topup_cancel_cb(call: CallbackQuery, state: FSMContext) -> None:
         await ack_callback(call, text="Пополнение отменено.")
         return
     await ack_callback(call)
-    await nav_edit(
-        msg,
-        MAIN_MENU_TEXT_HTML,
-        main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
-    )
+    await nav_edit(msg, START_WELCOME_HTML, _welcome_main_kb(call.from_user.id if call.from_user else None))
 
 
 @router.message(Command("cancel"), StateFilter(TopupStates.waiting_amount))
 async def topup_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
-        MAIN_MENU_TEXT_HTML + "\n\n<i>Пополнение отменено.</i>",
-        reply_markup=main_menu_kb(is_admin=_is_admin_user(message.from_user.id if message.from_user else None)),
+        START_WELCOME_HTML + "\n\n<i>Пополнение отменено.</i>",
+        reply_markup=_welcome_main_kb(message.from_user.id if message.from_user else None),
         parse_mode="HTML",
     )
 
@@ -490,6 +565,7 @@ async def topup_amount_entered(message: Message, state: FSMContext) -> None:
             inline_keyboard=[
                 [InlineKeyboardButton(text="💳 Оплатить (ЮKassa)", url=pay_url)],
                 [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"yk:{pay_id}")],
+                [InlineKeyboardButton(text="❌ Отменить оплату", callback_data="menu_home")],
             ]
         )
         await message.answer(
@@ -515,6 +591,7 @@ async def topup_amount_entered(message: Message, state: FSMContext) -> None:
         provider_token=settings.provider_token,
         currency="RUB",
         prices=[LabeledPrice(label=f"Пополнение {rub} ₽", amount=minor)],
+        reply_markup=payment_cancel_to_main_kb(),
     )
 
 
@@ -886,6 +963,7 @@ async def callback_plan(call: CallbackQuery) -> None:
             inline_keyboard=[
                 [InlineKeyboardButton(text="💳 Оплатить (ЮKassa)", url=pay_url)],
                 [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"yk:{pay_id}")],
+                [InlineKeyboardButton(text="❌ Отменить оплату", callback_data="menu_home")],
             ]
         )
         extra = ""
@@ -927,6 +1005,7 @@ async def callback_plan(call: CallbackQuery) -> None:
         provider_token=settings.provider_token,
         currency="RUB",
         prices=prices,
+        reply_markup=payment_cancel_to_main_kb(),
         need_email=False,
         need_name=False,
         need_phone_number=False,
