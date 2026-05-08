@@ -82,8 +82,9 @@ async def _servers_text() -> str:
     lines: list[str] = []
     lines.append(
         "🖥 <b>Серверы</b>\n\n"
-        "Активные подписки считаются из БД по <code>node_api_url</code> панели.\n"
-        "Поля «плановая ёмкость / load» из JSON — справочные, не телеметрия Marzban.\n"
+        "<b>Статус</b> (ok/degraded) и «ёмкость / load» — из <code>VPN_NODES_JSON</code>, справочно.\n\n"
+        "<b>Подписчиков на узле:</b> по данным бота — сколько активных подписей привязано к этому "
+        "<code>node_api_url</code> (панель выдачи). Живые «онлайн»-сессии в Marzban бот здесь не опрашивает.\n"
     )
     for n in sorted(nodes, key=lambda x: x.location_code.lower()):
         h = "ok" if n.is_healthy else "degraded"
@@ -93,8 +94,9 @@ async def _servers_text() -> str:
         live = counts.get(key, 0)
         lines.append(
             f"• [{html_escape.escape(n.location_code)}] <code>{html_escape.escape(n.api_url)}</code>\n"
-            f"  — {h}; <b>активных подписок (БД):</b> {live}\n"
-            f"  — <i>из JSON:</i> load {static_load} / capacity {cap}"
+            f"  — статус в конфиге: <b>{h}</b>\n"
+            f"  — активных клиентов (подписок по БД бота): <b>{live}</b>\n"
+            f"  — справочно из JSON: load {static_load} / capacity {cap}"
         )
     return "\n".join(lines)
 
