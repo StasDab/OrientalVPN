@@ -35,8 +35,11 @@ def main() -> int:
     except ImportError:
         load_dotenv = None  # type: ignore[assignment]
     env_path = Path(__file__).resolve().parents[1] / ".env"
+    app_env = Path(__file__).resolve().parents[1] / "app" / ".env"
     if load_dotenv:
         load_dotenv(env_path, override=True)
+        if app_env.is_file():
+            load_dotenv(app_env, override=True)
 
     raw_url = os.getenv("DATABASE_URL", "").strip()
     if not raw_url:

@@ -21,7 +21,6 @@ def profile_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📁 Мои подписки", callback_data="profile_subs")],
             [InlineKeyboardButton(text="💰 Мой баланс", callback_data="profile_balance")],
             [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile_topup")],
-            [InlineKeyboardButton(text="🎟️ Активировать промокод", callback_data="profile_promo")],
             [InlineKeyboardButton(text="🛡️ Обход глушилок", callback_data="jammer_help")],
             [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_home")],
         ]

@@ -254,6 +254,37 @@ class MarzbanAdapter:
             return [str(x).strip() for x in raw if str(x).strip()]
         return []
 
+    async def get_user_expire_unix(self, username: str) -> int | None:
+        """Поле expire из GET /api/user/{username}; unix-секунды. None если пользователь не найден."""
+        token = await self._get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                f"{self.panel_url}/api/user/{username}",
+                headers=headers,
+            )
+            if response.status_code == 404:
+                return None
+            if response.status_code == 401:
+                self._token = None
+                token = await self._get_token()
+                headers = {"Authorization": f"Bearer {token}"}
+                response = await client.get(
+                    f"{self.panel_url}/api/user/{username}",
+                    headers=headers,
+                )
+            if response.status_code == 404:
+                return None
+            _marzban_require_ok(response)
+            data = response.json()
+        raw = data.get("expire")
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
     async def set_expire(self, external_user_id: str, expire_at_ts: int) -> None:
         token = await self._get_token()
         payload = {"expire": expire_at_ts, "status": "active"}

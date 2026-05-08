@@ -16,6 +16,8 @@ class User(Base):
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     trial_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Баланс в копейках (как Telegram total_amount / payments.amount_minor).
+    balance_minor: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
 class Subscription(Base):

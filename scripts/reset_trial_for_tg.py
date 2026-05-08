@@ -4,11 +4,10 @@
 
 Удаление пользователей в панели Marzban на флаг trial_used в боте не влияет.
 
-Использование на VPS:
-  cd /opt/myvpn/app
-  /opt/myvpn/.venv/bin/python scripts/reset_trial_for_tg.py 731162352
+Переменная DATABASE_URL: из окружения или из `.env` / `app/.env` в корне репозитория.
 
-Переменная DATABASE_URL берётся из окружения или из .env в корне репозитория.
+Использование на VPS (из корня репозитория `/opt/myvpn`):
+  /opt/myvpn/.venv/bin/python scripts/reset_trial_for_tg.py 731162352
 """
 from __future__ import annotations
 
@@ -32,13 +31,19 @@ def main() -> int:
     except ImportError:
         load_dotenv = None  # type: ignore[assignment]
     env_path = Path(__file__).resolve().parents[1] / ".env"
+    app_env = Path(__file__).resolve().parents[1] / "app" / ".env"
     if load_dotenv:
-        # override=True: значения из .env на VPS должны перебивать устаревший DATABASE_URL в shell
         load_dotenv(env_path, override=True)
+        if app_env.is_file():
+            load_dotenv(app_env, override=True)
 
     raw_url = os.getenv("DATABASE_URL", "").strip()
     if not raw_url:
-        print("Нет DATABASE_URL", file=sys.stderr)
+        print(
+            "Нет DATABASE_URL. Задайте в /opt/myvpn/app/.env или /opt/myvpn/.env и снова запустите:\n"
+            f"  (искали: {env_path}, {app_env})",
+            file=sys.stderr,
+        )
         return 1
     # psycopg2.connect принимает libpq URI только как postgresql://..., не postgresql+psycopg2://
     dsn = raw_url.replace("postgresql+asyncpg", "postgresql", 1)

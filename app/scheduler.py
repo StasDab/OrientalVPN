@@ -8,22 +8,23 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.models import Payment, User
 from app.db.repositories import (
-    create_or_extend_subscription,
-    list_all_user_tg_ids,
     list_expired_active_subscriptions,
     list_pending_provision_events,
     list_pending_yookassa_payments,
     list_subscriptions_needing_reminder,
     mark_reminder_sent,
     touch_event,
-    update_payment_status,
 )
 from app.db.session import SessionLocal
-from app.plans import LOCATION_TITLES, decode_invoice_payload, plan_days
-from app.payment_fulfillment import fulfill_paid_payment_row
+from app.payment_fulfillment import fulfill_paid_payment_row, provision_plan_for_payment
+from app.plans import (
+    LOCATION_TITLES,
+    decode_plan_invoice_payload,
+    decode_topup_invoice_payload,
+    plan_days,
+)
 from app.services.yookassa import get_payment as yk_get_payment
 from app.services.node_registry import pick_node_for_location, pick_primary_node
-from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
 from app.telegram_format import subscription_url_pre_block
 
@@ -94,6 +95,11 @@ async def _process_provision_events(bot: Bot) -> None:
                 await touch_event(session, ev.id, status="done", retries=ev.retries)
                 continue
 
+            inv_pl = decode_plan_invoice_payload(pay_row.invoice_payload or "")
+            if not inv_pl:
+                await touch_event(session, ev.id, status="failed", retries=ev.retries)
+                continue
+
             node = (
                 pick_primary_node()
                 if location_code == "all"
@@ -107,59 +113,34 @@ async def _process_provision_events(bot: Bot) -> None:
                     await touch_event(session, ev.id, status="pending", retries=nret)
                 continue
 
-            provider = MarzbanAdapter(
-                panel_url=node.api_url,
-                username=settings.panel_username,
-                password=settings.panel_password,
+            outcome = await provision_plan_for_payment(
+                session,
+                pay_row,
+                tg_user_id,
+                inv_pl,
+                selected_node=node,
+                enqueue_on_failure=False,
             )
-            try:
-                result = await with_retry(
-                    lambda: provider.provision_access(
+            if outcome.ok:
+                await touch_event(session, ev.id, status="done", retries=ev.retries)
+                try:
+                    await bot.send_message(
                         tg_user_id,
-                        location_code,
-                        node=node,
-                        days=plan_days_val,
-                    ),
-                    retries=settings.provision_retries,
-                    base_delay_seconds=1.0,
-                )
-            except Exception:
-                nret = ev.retries + 1
-                if nret >= settings.event_max_retries:
-                    await touch_event(session, ev.id, status="failed", retries=nret)
-                else:
-                    await touch_event(session, ev.id, status="pending", retries=nret)
+                        "Доступ выдан после ожидания."
+                        f"{subscription_url_pre_block(outcome.subscription_url or '')}\n"
+                        "Инструкция: клиент → вставить ссылку → обновить профиль.",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    log.warning("provision_notify_failed", extra={"tg_id": tg_user_id})
                 continue
 
-            urow = await session.execute(select(User).where(User.id == pay_row.user_id))
-            db_user = urow.scalar_one_or_none()
-            if not db_user:
-                await touch_event(session, ev.id, status="failed", retries=ev.retries)
-                continue
-
-            sub_row = await create_or_extend_subscription(
-                session=session,
-                user_id=db_user.id,
-                external_user_id=result.external_user_id,
-                subscription_url=result.subscription_url,
-                location_code="all",
-                node_api_url=node.api_url,
-                duration_days=plan_days_val,
-                panel_ends_at=result.ends_at,
-            )
-            await update_payment_status(session, payment_id, "paid")
-            await touch_event(session, ev.id, status="done", retries=ev.retries)
-            try:
-                await bot.send_message(
-                    tg_user_id,
-                    "Доступ выдан после ожидания."
-                    f"{subscription_url_pre_block(sub_row.subscription_url)}\n"
-                    "Инструкция: клиент → вставить ссылку → обновить профиль.",
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
-            except Exception:
-                log.warning("provision_notify_failed", extra={"tg_id": tg_user_id})
+            nret = ev.retries + 1
+            if nret >= settings.event_max_retries:
+                await touch_event(session, ev.id, status="failed", retries=nret)
+            else:
+                await touch_event(session, ev.id, status="pending", retries=nret)
 
         await session.commit()
 
@@ -181,15 +162,32 @@ async def _poll_yookassa_payments(bot: Bot) -> None:
                 continue
             if (remote.get("status") or "").lower() != "succeeded":
                 continue
-            inv = decode_invoice_payload(pay.invoice_payload or "")
-            if not inv:
-                continue
-            outcome = await fulfill_paid_payment_row(session, pay, buyer_tg_id=inv.buyer_tg_id)
+            tu = decode_topup_invoice_payload(pay.invoice_payload or "")
+            buyer_tg = tu.buyer_tg_id if tu else None
+            if buyer_tg is None:
+                inv_pl = decode_plan_invoice_payload(pay.invoice_payload or "")
+                if not inv_pl:
+                    continue
+                buyer_tg = inv_pl.buyer_tg_id
+            outcome = await fulfill_paid_payment_row(session, pay, buyer_tg_id=buyer_tg)
             await session.commit()
+            if outcome.already_done:
+                continue
+            if outcome.topup_credited_minor is not None:
+                rub = outcome.topup_credited_minor / 100
+                try:
+                    await bot.send_message(
+                        buyer_tg,
+                        f"Баланс пополнен на <code>{rub:.2f} ₽</code> (ЮKassa).",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    log.warning("yookassa_topup_notify_failed", extra={"tg_id": buyer_tg})
+                continue
             if outcome.ok and outcome.subscription_url:
                 try:
                     await bot.send_message(
-                        inv.buyer_tg_id,
+                        buyer_tg,
                         "Оплата подтверждена (ЮKassa).\n"
                         "Доступ: все серверы (одна подписка)"
                         f"{subscription_url_pre_block(outcome.subscription_url)}\n"
@@ -198,7 +196,7 @@ async def _poll_yookassa_payments(bot: Bot) -> None:
                         disable_web_page_preview=True,
                     )
                 except Exception:
-                    log.warning("yookassa_notify_failed", extra={"tg_id": inv.buyer_tg_id})
+                    log.warning("yookassa_notify_failed", extra={"tg_id": buyer_tg})
 
 
 async def background_jobs(bot: Bot) -> None:

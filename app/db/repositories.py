@@ -218,6 +218,26 @@ async def mark_trial_used(session: AsyncSession, user_id: int) -> None:
     await session.execute(update(User).where(User.id == user_id).values(trial_used=True))
 
 
+async def try_deduct_user_balance_minor(session: AsyncSession, user_id: int, amount: int) -> bool:
+    """Атомарное списание. amount в копейках. Возвращает False, если не хватило баланса."""
+    if amount <= 0:
+        return True
+    res = await session.execute(
+        update(User)
+        .where(User.id == user_id, User.balance_minor >= amount)
+        .values(balance_minor=User.balance_minor - amount)
+    )
+    return res.rowcount == 1  # type: ignore[union-attr]
+
+
+async def add_user_balance_minor(session: AsyncSession, user_id: int, amount: int) -> None:
+    if amount == 0:
+        return
+    await session.execute(
+        update(User).where(User.id == user_id).values(balance_minor=User.balance_minor + amount)
+    )
+
+
 async def create_event(session: AsyncSession, type_: str, payload: dict) -> Event:
     now = utc_now_naive()
     ev = Event(
