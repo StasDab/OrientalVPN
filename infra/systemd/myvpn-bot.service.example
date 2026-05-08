@@ -4,14 +4,15 @@
 # Установка:
 #   sudo useradd -r -m -s /bin/bash myvpn
 #   sudo mkdir -p /opt/myvpn && sudo chown myvpn:myvpn /opt/myvpn
-#   git clone <repo> /opt/myvpn/app   # или rsync/scp
-#   cd /opt/myvpn/app && python3.12 -m venv /opt/myvpn/.venv
+#   git clone <repo> /opt/myvpn
+#   cd /opt/myvpn && python3.12 -m venv /opt/myvpn/.venv
 #   /opt/myvpn/.venv/bin/pip install -r requirements.txt
 #   sudo cp infra/systemd/myvpn-bot.service.example /etc/systemd/system/myvpn-bot.service
 #   правки путей/User в unit при необходимости
 #   sudo systemctl daemon-reload && sudo systemctl enable --now myvpn-bot
 #
-# Файл /opt/myvpn/app/.env — как в .env.example (DATABASE_URL на 127.0.0.1 если БД в Docker).
+# Файл /opt/myvpn/app/.env — секреты и DATABASE_URL.
+# WorkingDirectory — корень репозитория (рядом с alembic.ini), не каталог app/.
 # Если Postgres не в Docker — удалите docker.service из After= и Wants= ниже.
 
 [Unit]
@@ -23,9 +24,9 @@ Wants=network-online.target docker.service
 Type=simple
 User=myvpn
 Group=myvpn
-WorkingDirectory=/opt/myvpn/app
+WorkingDirectory=/opt/myvpn
 EnvironmentFile=/opt/myvpn/app/.env
-ExecStartPre=/opt/myvpn/.venv/bin/alembic upgrade head
+ExecStartPre=/opt/myvpn/.venv/bin/python -m alembic upgrade head
 ExecStart=/opt/myvpn/.venv/bin/python -m app.main
 Restart=on-failure
 RestartSec=15

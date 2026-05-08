@@ -96,11 +96,11 @@ marzban restart
 
 На сервере с уже работающим nginx/Marzban:
 
-1. Скопируйте проект (например `/opt/myvpn/app`), создайте `.env` из `.env.example`: `PANEL_URL`, учётка API Marzban, `VPN_NODES_JSON`, `BOT_TOKEN`, `ADMIN_IDS`, пароли БД.
+1. Клонируйте репозиторий в `/opt/myvpn` (корень проекта с `alembic.ini`, не только папка `app/`). `.env` положите в `/opt/myvpn/app/.env`: `PANEL_URL`, учётка API Marzban, `VPN_NODES_JSON`, `BOT_TOKEN`, `ADMIN_IDS`, пароли БД.
 2. Поднимите только БД: `docker compose -f infra/docker-compose.yml up -d`
-3. Python 3.12+: `python3 -m venv /opt/myvpn/.venv && /opt/myvpn/.venv/bin/pip install -r /opt/myvpn/app/requirements.txt`
-4. `cd /opt/myvpn/app && /opt/myvpn/.venv/bin/alembic upgrade head`
-5. Unit systemd: скопируйте `infra/systemd/myvpn-bot.service.example` → `/etc/systemd/system/myvpn-bot.service`, поправьте пути на `/opt/myvpn/app` и venv, `EnvironmentFile=/opt/myvpn/app/.env`, затем `systemctl daemon-reload && systemctl enable --now myvpn-bot`
+3. Python 3.12+: `python3 -m venv /opt/myvpn/.venv && /opt/myvpn/.venv/bin/pip install -r /opt/myvpn/requirements.txt`
+4. `cd /opt/myvpn && ./scripts/migrate.sh` (или `/opt/myvpn/.venv/bin/python -m alembic upgrade head`)
+5. Unit systemd: скопируйте `infra/systemd/myvpn-bot.service.example` → `/etc/systemd/system/myvpn-bot.service`. **`WorkingDirectory=/opt/myvpn`** (рядом с `alembic.ini`), `EnvironmentFile=/opt/myvpn/app/.env`, затем `systemctl daemon-reload && systemctl enable --now myvpn-bot`
 
 ### Нужен ли отдельный firstVDS «Старт»?
 **Не обязательно**, если текущий VPS тянет нагрузку и есть **~2 GB+ RAM**. **Имеет смысл**, если хотите изоляцию (падение VPN не роняет биллинг), мало памяти или планируете много пользователей бота.
