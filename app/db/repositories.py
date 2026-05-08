@@ -165,6 +165,31 @@ async def count_active_subscriptions_by_node_url(session: AsyncSession) -> dict[
     return {str(u or ""): int(n or 0) for u, n in rows.all()}
 
 
+async def count_referrals_registered(session: AsyncSession, referrer_internal_id: int) -> int:
+    row = await session.execute(
+        select(func.count()).select_from(User).where(User.referred_by_user_id == referrer_internal_id)
+    )
+    return int(row.scalar_one() or 0)
+
+
+async def count_referrals_with_tariff_payment(session: AsyncSession, referrer_internal_id: int) -> int:
+    """
+    Приглашённые пользователи, у которых есть хотя бы одна успешная оплата тарифного инвойса
+    (не пополнение баланса по payload topup:).
+    """
+    row = await session.execute(
+        select(func.count(func.distinct(Payment.user_id)))
+        .select_from(Payment)
+        .join(User, User.id == Payment.user_id)
+        .where(
+            User.referred_by_user_id == referrer_internal_id,
+            Payment.status == "paid",
+            ~Payment.invoice_payload.startswith("topup:"),
+        )
+    )
+    return int(row.scalar_one() or 0)
+
+
 async def maybe_finalize_plan_promo(
     session: AsyncSession,
     *,
