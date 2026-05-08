@@ -28,6 +28,18 @@ def _client_fingerprint(request: web.Request) -> str:
 
 
 async def handle_subscription_gate(request: web.Request) -> web.StreamResponse:
+    try:
+        return await _handle_subscription_gate_impl(request)
+    except web.HTTPException:
+        raise
+    except Exception:
+        log.exception("subscription_gate_unhandled")
+        raise web.HTTPInternalServerError(
+            text="Внутренняя ошибка шлюза. Смотрите логи сервиса бота."
+        ) from None
+
+
+async def _handle_subscription_gate_impl(request: web.Request) -> web.StreamResponse:
     token = (request.match_info.get("token") or "").strip()
     if not token:
         raise web.HTTPNotFound(text="Not found")
@@ -39,7 +51,7 @@ async def handle_subscription_gate(request: web.Request) -> web.StreamResponse:
             r = await session.execute(
                 select(Subscription).where(Subscription.sub_gate_token == token).with_for_update()
             )
-            sub = r.scalar_one_or_none()
+            sub = r.scalars().one_or_none()
             if not sub or not (sub.upstream_subscription_url or "").strip():
                 raise web.HTTPNotFound(text="Подписка не найдена.")
             if sub.status != "active" or sub.ends_at <= utc_now_naive():

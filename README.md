@@ -77,6 +77,119 @@ cd /opt/myvpn
 
 Пример только для шлюза подписок: `infra/nginx-subscription-gate.conf.example`. Панель Marzban: `infra/nginx-marzban-panel.conf.example`.
 
+## Пошагово: `sub.orientalvpn.ru`, TLS, бот, nginx (исправить 404/500/сертификат)
+
+Имя поддомена ниже — **sub.orientalvpn.ru** (в DNS и в конфиге должно совпадать буква в букву).
+
+### Шаг 1. DNS
+
+У регистратора домена создайте запись **A** (и при желании **AAAA** для IPv6):
+
+- `sub.orientalvpn.ru` → **публичный IP** того сервера, где стоит **nginx** (тот же VPS, где слушает 443, или отдельный прокси — тогда IP прокси).
+
+Проверка с ноутбука:
+
+```bash
+nslookup sub.orientalvpn.ru
+```
+
+### Шаг 2. Миграции БД и переменные бота
+
+На сервере, от **`myvpn`**, из **корня** репозитория `/opt/myvpn`:
+
+```bash
+sudo -u myvpn -H bash -lc 'cd /opt/myvpn && git pull && .venv/bin/python -m alembic upgrade head'
+```
+
+В файле **`/opt/myvpn/app/.env`** должны быть (проверьте и перезапустите бота после правок):
+
+```env
+SUBSCRIPTION_GATE_PUBLIC_BASE=https://sub.orientalvpn.ru
+SUBSCRIPTION_GATE_LISTEN_HOST=0.0.0.0
+SUBSCRIPTION_GATE_LISTEN_PORT=8095
+DATABASE_URL=...
+```
+
+Убедиться, что строка реально читается:
+
+```bash
+sudo -u myvpn -H bash -lc 'grep -E "^SUBSCRIPTION_GATE_" /opt/myvpn/app/.env'
+```
+
+Если **`SUBSCRIPTION_GATE_PUBLIC_BASE` пустой** — шлюз **не поднимется**, ссылки в боте будут без шлюза или со старым доменом.
+
+Перезапуск:
+
+```bash
+sudo systemctl restart myvpn-bot
+sudo systemctl status myvpn-bot --no-pager
+```
+
+В логах при старте должно быть что-то вроде **subscription gate listening 0.0.0.0:8095** (если база для шлюза задана).
+
+```bash
+sudo journalctl -u myvpn-bot -n 80 --no-pager
+```
+
+Проверка порта:
+
+```bash
+ss -tlnp | grep 8095
+```
+
+### Шаг 3. Локальный тест шлюза (обойти nginx)
+
+Подставьте UUID из ссылки бота:
+
+```bash
+curl -sS -D- -o /tmp/sub.txt "http://127.0.0.1:8095/sub/ВАШ-UUID" | head -20
+head -5 /tmp/sub.txt
+```
+
+Ожидание: **200** и тело похоже на список прокси / base64-подписку. **404** «Подписка не найдена» — в БД нет строки с таким `sub_gate_token` или пустой `upstream_subscription_url` (нужна новая выдача подписки из бота после включения шлюза или проверка миграций). **500** — смотрите **сразу** логи: `journalctl -u myvpn-bot -n 100 --no-pager` (часто нет миграции, ошибка БД или недоступен upstream Marzban).
+
+### Шаг 4. Nginx: proxy_pass на шлюз
+
+Установите конфиг (адаптируйте имя файла под себя):
+
+```bash
+sudo cp /opt/myvpn/infra/nginx-subscription-gate.conf.example /etc/nginx/sites-available/sub.orientalvpn.ru
+sudo sed -i 's/sub\.example\.com/sub.orientalvpn.ru/g' /etc/nginx/sites-available/sub.orientalvpn.ru
+sudo ln -sf /etc/nginx/sites-available/sub.orientalvpn.ru /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+В блоке `location /` должен быть **`proxy_pass http://127.0.0.1:8095;`** (без лишнего URI — чтобы запрос шёл как `/sub/...` на бэкенд).
+
+Проверка **через nginx по HTTP** (до сертификата):
+
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" -H "Host: sub.orientalvpn.ru" "http://127.0.0.1/sub/ВАШ-UUID"
+```
+
+(Если nginx слушает только на интерфейсе сервера, используйте `curl http://IP_СЕРВЕРА/... -H "Host: sub.orientalvpn.ru"`.)
+
+### Шаг 5. Валидный TLS (Let's Encrypt)
+
+На сервере с nginx и **открытыми** портами **80** и **443**:
+
+```bash
+sudo apt update && sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d sub.orientalvpn.ru
+```
+
+Certbot поправит `server { listen 443 ssl; ... }` и пути к `fullchain.pem` / `privkey.pem`. После этого:
+
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" "https://sub.orientalvpn.ru/sub/ВАШ-UUID"
+```
+
+В браузере по HTTPS не должно быть «незащищённо» для этого имени.
+
+### Шаг 6. Happ / телефон
+
+Вставьте **полную** ссылку `https://sub.orientalvpn.ru/sub/<uuid>` из бота («Мои подписки»). После шагов выше сертификат и путь должны совпадать с тем, что отдаёт ваш nginx и шлюз.
+
 ## Деплой на VPS (кратко)
 
 - Пользователь **`myvpn`**, каталог **`/opt/myvpn`**, `chown -R myvpn:myvpn`
