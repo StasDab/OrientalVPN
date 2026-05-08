@@ -21,16 +21,13 @@ from app.keyboards.main import (
     main_menu_kb,
     plans_kb,
     profile_kb,
-    servers_pick_kb,
     subscriptions_back_kb,
 )
 from app.plans import LOCATION_TITLES, PLAN_MAP
 from app.services.node_registry import (
     available_location_codes,
-    pick_node_for_location,
     pick_primary_node,
 )
-from app.services.server_selector import pick_share_link_for_node
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
 from app.services.yookassa import YookassaError, create_redirect_payment
@@ -81,8 +78,7 @@ HELP_TEXT = (
     "3) Обновите список серверов в клиенте.\n\n"
     "Команды: /buy — тарифы, /trial — пробный доступ, "
     "/my — подписки, /profile — профиль, /help — эта справка.\n\n"
-    "Пробный доступ и оплата дают одну ссылку подписки со всеми серверами. "
-    "В «Выбрать сервер» можно получить отдельную ссылку на локацию, если она доступна."
+    "Пробный доступ и оплата дают одну ссылку подписки со всеми серверами — она в разделе «Мои подписки»."
 )
 
 
@@ -518,7 +514,7 @@ async def _run_trial(message: Message, tg_user) -> None:
     hours = settings.trial_hours
     await message.answer(
         f"✅ Пробный доступ на <b>~{hours} ч.</b>\n"
-        "В подписке сразу <b>все серверы</b>. Отдельную ссылку на один узел можно взять в «Выбрать сервер».\n"
+        "В подписке сразу <b>все серверы</b>. Ссылка — в «Мои подписки» (/my).\n"
         f"{subscription_url_pre_block(public_sub_url)}\n"
         "Инструкция: клиент → вставить ссылку → обновить профиль.",
         parse_mode="HTML",
@@ -560,142 +556,13 @@ async def cmd_trial(message: Message) -> None:
 
 
 @router.callback_query(F.data == "srv_menu")
-async def callback_srv_menu(call: CallbackQuery) -> None:
-    if not call.from_user:
-        await ack_callback(call)
-        return
-    msg = _callback_edit_target(call)
-    if not msg:
-        await ack_callback(call, text="Откройте меню: /start", show_alert=True)
-        return
-    await ack_callback(call)
-    async with SessionLocal() as session:
-        user = await get_user_by_tg_id(session, call.from_user.id)
-        if not user:
-            await nav_edit(
-                msg,
-                "Сначала активируйте подписку или пробный период.",
-                main_menu_kb(),
-                parse_mode=None,
-            )
-            return
-        subs = await list_active_subscriptions_for_user(session, user.id)
-    if not subs:
-        await nav_edit(
-            msg,
-            "Нет активной подписки. Используйте «Пробный доступ» или «Купить».",
-            main_menu_kb(),
-            parse_mode=None,
-        )
-        return
-
-    await nav_edit(
-        msg,
-        "🌐 <b>Выберите сервер</b>\n\n"
-        "<b>Все серверы</b> — одна ссылка подписки, в клиенте появятся все узлы.\n"
-        "<b>Один сервер</b> — отдельная конфигурация для выбранной локации, когда доступна.\n",
-        servers_pick_kb(),
-    )
+async def callback_srv_menu_legacy(call: CallbackQuery) -> None:
+    await ack_callback(call, text="Раздел убран. Откройте «Мои подписки».", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("srvpick:"))
-async def callback_srv_pick(call: CallbackQuery) -> None:
-    if not call.from_user:
-        await ack_callback(call)
-        return
-    msg = _callback_edit_target(call)
-    if not msg:
-        await ack_callback(call, text="Откройте меню: /start", show_alert=True)
-        return
-    key = call.data.split(":", 1)[1].lower()
-
-    async with SessionLocal() as session:
-        user = await get_user_by_tg_id(session, call.from_user.id)
-        if not user:
-            await ack_callback(call, text="Нет профиля.", show_alert=True)
-            return
-        subs = await list_active_subscriptions_for_user(session, user.id)
-    if not subs:
-        await ack_callback(call)
-        await nav_edit(
-            msg,
-            "Нет активной подписки.",
-            main_menu_kb(),
-            parse_mode=None,
-        )
-        return
-
-    sub = subs[0]
-    provider = MarzbanAdapter(
-        panel_url=sub.node_api_url,
-        username=settings.panel_username,
-        password=settings.panel_password,
-    )
-
-    if key == "all":
-        title = "Все серверы"
-        body = (
-            f"<b>{html_escape.escape(title)}</b>\n"
-            "Импортируйте ссылку — в клиенте появятся все узлы из подписки."
-            f"{subscription_url_pre_block(sub.subscription_url)}"
-        )
-        await ack_callback(call)
-        await nav_edit(
-            msg,
-            body,
-            servers_pick_kb(),
-        )
-        return
-
-    if key not in available_location_codes():
-        await ack_callback(call, text="Неверный сервер.", show_alert=True)
-        return
-
-    node = pick_node_for_location(key)
-    if not node:
-        await ack_callback(call, text="Сервер недоступен.", show_alert=True)
-        return
-
-    try:
-        links = await provider.get_user_share_links(sub.external_user_id)
-    except Exception:
-        log.exception("fetch_share_links_failed", extra={"user": sub.external_user_id})
-        await ack_callback(call, text="Не удалось получить ссылки с панели.", show_alert=True)
-        return
-
-    loc_title = LOCATION_TITLES.get(key, key.upper())
-    single_url = pick_share_link_for_node(links, node) or ""
-
-    if not single_url:
-        log.warning(
-            "share_link_no_match",
-            extra={
-                "location": key,
-                "needles": list(node.link_matches),
-                "links_count": len(links),
-            },
-        )
-        body = (
-            f"<b>{html_escape.escape(loc_title)}</b>\n"
-            "Отдельная ссылка для этого узла сейчас недоступна.\n"
-            "Импортируйте общую подписку ниже: в клиенте обновите список серверов и выберите "
-            f"<b>{html_escape.escape(loc_title)}</b> вручную.\n\n"
-            "<b>Общая подписка</b>"
-            f"{subscription_url_pre_block(sub.subscription_url)}"
-        )
-        await ack_callback(call)
-        await nav_edit(msg, body, servers_pick_kb())
-        return
-
-    body = (
-        f"<b>{html_escape.escape(loc_title)}</b>\n"
-        "Только этот узел (одна vless/vmess ссылка)."
-        f"{subscription_url_pre_block(single_url)}\n\n"
-        "<b>Все серверы:</b>"
-        f"{subscription_url_pre_only(sub.subscription_url)}"
-    )
-    await ack_callback(call)
-    await nav_edit(msg, body, servers_pick_kb())
+async def callback_srv_pick_legacy(call: CallbackQuery) -> None:
+    await ack_callback(call, text="Используйте «Мои подписки» — одна ссылка на все серверы.", show_alert=True)
 
 
 @router.callback_query(F.data == "my")

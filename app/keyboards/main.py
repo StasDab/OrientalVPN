@@ -1,7 +1,6 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.plans import LOCATION_TITLES, PLAN_MAP
-from app.services.node_registry import available_location_codes
+from app.plans import PLAN_MAP
 
 
 def main_menu_kb() -> InlineKeyboardMarkup:
@@ -11,7 +10,6 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="💳 Купить", callback_data="buy")],
             [InlineKeyboardButton(text="Пробный доступ", callback_data="trial")],
             [InlineKeyboardButton(text="📁 Мои подписки", callback_data="my")],
-            [InlineKeyboardButton(text="🌐 Выбрать сервер", callback_data="srv_menu")],
             [InlineKeyboardButton(text="Помощь", callback_data="help")],
         ]
     )
@@ -63,14 +61,3 @@ def subscriptions_back_kb() -> InlineKeyboardMarkup:
         ]
     )
 
-
-def servers_pick_kb() -> InlineKeyboardMarkup:
-    rows = []
-    for loc in available_location_codes():
-        title = LOCATION_TITLES.get(loc, loc.upper())
-        rows.append([InlineKeyboardButton(text=title, callback_data=f"srvpick:{loc}")])
-    rows.append(
-        [InlineKeyboardButton(text="📡 Подключить все серверы", callback_data="srvpick:all")]
-    )
-    rows.append([InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_home")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
