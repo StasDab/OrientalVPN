@@ -80,21 +80,29 @@ router = Router()
 _TELEGRAM_TEXT_MAX = 4096
 MIN_TOPUP_RUB = 1
 MAX_TOPUP_RUB = 500_000
+# Практический минимум счёта в Telegram Payments у провайдера (ниже часто Bad Request даже если в .env 1 ₽).
+TELEGRAM_TOPUP_MIN_RUB = 100
 
 
 def _effective_min_topup_rub() -> int:
-    """ЮKassa можно с 1 ₽; Telegram Payments режет малые суммы — см. TELEGRAM_MIN_INVOICE_RUB."""
+    """ЮKassa можно с 1 ₽; Telegram send_invoice — не ниже TELEGRAM_TOPUP_MIN_RUB и TELEGRAM_MIN_INVOICE_RUB."""
     if settings.use_yookassa:
         return MIN_TOPUP_RUB
-    return max(MIN_TOPUP_RUB, int(settings.telegram_min_invoice_rub))
+    return max(MIN_TOPUP_RUB, int(settings.telegram_min_invoice_rub), TELEGRAM_TOPUP_MIN_RUB)
 
 
-def _user_text_for_invoice_bad_request(exc: TelegramBadRequest) -> str:
+def _topup_below_min_message(mn: int) -> str:
+    return f"Минимальная сумма пополнения — {mn} рублей."
+
+
+def _user_text_for_invoice_bad_request(exc: TelegramBadRequest, *, topup: bool = False) -> str:
     api = ((getattr(exc, "message", None) or str(exc))).upper()
     if "CURRENCY_TOTAL_AMOUNT_INVALID" in api:
+        if topup:
+            return _topup_below_min_message(_effective_min_topup_rub())
         return (
-            f"Платёжная система не принимает слишком маленькую сумму. "
-            f"Укажите не менее {_effective_min_topup_rub()} ₽ или попробуйте другую сумму."
+            "Сумма к оплате не принимается платёжной системой для этого счёта. "
+            "Попробуйте другой тариф или способ оплаты."
         )
     return "Не удалось открыть оплату. Попробуйте позже или выберите другую сумму."
 
@@ -649,9 +657,7 @@ async def _execute_topup_payment(message: Message, rub: int) -> None:
 
     min_rub = _effective_min_topup_rub()
     if rub < min_rub:
-        await message.answer(
-            f"Сумма должна быть от {min_rub} до {MAX_TOPUP_RUB} ₽. Введите другое число.",
-        )
+        await message.answer(_topup_below_min_message(min_rub))
         return
 
     try:
@@ -667,7 +673,7 @@ async def _execute_topup_payment(message: Message, rub: int) -> None:
         )
     except TelegramBadRequest as e:
         log.exception("topup_send_invoice_failed", extra={"tg_id": message.from_user.id, "error": str(e)})
-        await message.answer(_user_text_for_invoice_bad_request(e))
+        await message.answer(_user_text_for_invoice_bad_request(e, topup=True))
 
 
 def _looks_like_topup_prompt(msg: Message) -> bool:
@@ -694,8 +700,11 @@ async def topup_amount_entered(message: Message, state: FSMContext) -> None:
         return
     rub = int(raw)
     mn = _effective_min_topup_rub()
-    if rub < mn or rub > MAX_TOPUP_RUB:
-        await message.answer(f"Допустимо от {mn} до {MAX_TOPUP_RUB} ₽.")
+    if rub < mn:
+        await message.answer(_topup_below_min_message(mn))
+        return
+    if rub > MAX_TOPUP_RUB:
+        await message.answer(f"Допустимо не больше {MAX_TOPUP_RUB} ₽.")
         return
     await state.clear()
     await _execute_topup_payment(message, rub)
@@ -718,8 +727,11 @@ async def topup_amount_reply_fallback(message: Message, state: FSMContext) -> No
     raw = (message.text or "").strip()
     rub = int(raw)
     mn = _effective_min_topup_rub()
-    if rub < mn or rub > MAX_TOPUP_RUB:
-        await message.answer(f"Допустимо от {mn} до {MAX_TOPUP_RUB} ₽.")
+    if rub < mn:
+        await message.answer(_topup_below_min_message(mn))
+        return
+    if rub > MAX_TOPUP_RUB:
+        await message.answer(f"Допустимо не больше {MAX_TOPUP_RUB} ₽.")
         return
     await state.clear()
     await _execute_topup_payment(message, rub)
