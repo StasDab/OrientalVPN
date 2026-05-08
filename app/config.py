@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     # HTTPS URL возврата после оплаты (например https://t.me/YourBot или страница сайта).
     yookassa_return_url: str = Field(default="", alias="YOOKASSA_RETURN_URL")
     admin_ids: str = Field(default="", alias="ADMIN_IDS")
+    # Без «@»: для deeplink https://t.me/{username}?start=ref_...
+    public_bot_username: str = Field(default="OrientalVPNbot", alias="PUBLIC_BOT_USERNAME")
     referral_commission_bps: int = Field(
         default=1000,
         ge=0,
