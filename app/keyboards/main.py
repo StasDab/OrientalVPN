@@ -22,8 +22,17 @@ def profile_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📁 Мои подписки", callback_data="profile_subs")],
             [InlineKeyboardButton(text="💰 Мой баланс", callback_data="profile_balance")],
             [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile_topup")],
+            [InlineKeyboardButton(text="🎟️ Промокод", callback_data="profile_promo")],
             [InlineKeyboardButton(text="🛡️ Обход глушилок", callback_data="jammer_help")],
             [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_home")],
+        ]
+    )
+
+
+def promo_cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Отменить", callback_data="promo_cancel")],
         ]
     )
 
@@ -79,6 +88,14 @@ def admin_panel_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🤝 Рефералы", callback_data="admin_referrals")],
             [InlineKeyboardButton(text="📣 Рассылка", callback_data="admin_broadcast")],
             [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_home")],
+        ]
+    )
+
+
+def admin_nav_back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 В панель", callback_data="admin_home")],
         ]
     )
 

@@ -8,7 +8,10 @@ from app.db.repositories import (
     create_payment,
     get_or_create_user,
     get_payment_by_tg_charge,
+    get_promo_by_id,
     get_user_by_tg_id,
+    promo_discount_on_amount,
+    validate_discount_promo_for_checkout,
 )
 from app.db.session import SessionLocal
 from app.payment_fulfillment import fulfill_paid_payment_row
@@ -140,10 +143,8 @@ async def pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
     if not plan:
         await pre_checkout_query.answer(ok=False, error_message="Неизвестный тариф.")
         return
-    expected_pay = plan["amount"] - inv.balance_applied_minor
-    if expected_pay < 0 or pre_checkout_query.total_amount != expected_pay:
-        await pre_checkout_query.answer(ok=False, error_message="Сумма не совпадает с тарифом.")
-        return
+    base_minor = int(plan["amount"])
+    discounted_minor = base_minor
 
     async with SessionLocal() as session:
         u = await get_user_by_tg_id(session, inv.buyer_tg_id)
@@ -153,6 +154,27 @@ async def pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
                 error_message="Недостаточно средств на балансе. Обновите экран оплаты.",
             )
             return
+        if inv.promo_id:
+            pr = await get_promo_by_id(session, inv.promo_id)
+            if not pr:
+                await pre_checkout_query.answer(ok=False, error_message="Промокод недоступен. Обновите счёт.")
+                return
+            v_err = await validate_discount_promo_for_checkout(session, pr, u.id)
+            if v_err:
+                await pre_checkout_query.answer(ok=False, error_message=v_err[:200])
+                return
+            if u.active_promo_id != inv.promo_id:
+                await pre_checkout_query.answer(
+                    ok=False,
+                    error_message="Промокод снят. Выберите тариф заново в боте.",
+                )
+                return
+            discounted_minor, _discount = promo_discount_on_amount(base_minor, pr)
+
+    expected_pay = discounted_minor - inv.balance_applied_minor
+    if expected_pay < 0 or pre_checkout_query.total_amount != expected_pay:
+        await pre_checkout_query.answer(ok=False, error_message="Сумма не совпадает с тарифом.")
+        return
 
     await pre_checkout_query.answer(ok=True)
 

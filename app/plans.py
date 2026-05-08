@@ -33,6 +33,8 @@ class PlanInvoicePayload:
     location_code: str
     buyer_tg_id: int
     balance_applied_minor: int = 0
+    # Скидочный промо: id в БД; при списании/рефералах сумма считается по номиналу тарифа после скидки.
+    promo_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,10 @@ class TopupInvoicePayload:
 
 def plan_days(plan_code: str) -> int:
     return int(PLAN_MAP.get(plan_code, {}).get("days", 30))
+
+
+def plan_amount_minor(plan_code: str) -> int:
+    return int(PLAN_MAP.get(plan_code, {}).get("amount", 0))
 
 
 def decode_topup_invoice_payload(raw: str) -> TopupInvoicePayload | None:
@@ -78,20 +84,42 @@ def decode_plan_invoice_payload(raw: str) -> PlanInvoicePayload | None:
             balance_applied_minor = max(0, int(parts[3]))
         except ValueError:
             return None
+    promo_id: int | None = None
+    if len(parts) >= 5:
+        try:
+            raw_pi = int(parts[4])
+            promo_id = raw_pi if raw_pi > 0 else None
+        except ValueError:
+            return None
     if location_code == "all":
         if not locs:
             return None
     elif location_code not in locs:
         return None
     plan_amount = int(PLAN_MAP[plan_code]["amount"])
-    if balance_applied_minor > plan_amount:
+    if promo_id is None and balance_applied_minor > plan_amount:
         return None
     return PlanInvoicePayload(
         plan_code=plan_code,
         location_code=location_code,
         buyer_tg_id=buyer_tg_id,
         balance_applied_minor=balance_applied_minor,
+        promo_id=promo_id,
     )
+
+
+def encode_plan_invoice_payload(
+    *,
+    plan_code: str,
+    location_code: str,
+    buyer_tg_id: int,
+    balance_applied_minor: int,
+    promo_id: int | None = None,
+) -> str:
+    base = f"{plan_code}:{location_code}:{buyer_tg_id}:{balance_applied_minor}"
+    if promo_id and promo_id > 0:
+        return f"{base}:{promo_id}"
+    return base
 
 
 def decode_invoice_payload(raw: str) -> PlanInvoicePayload | None:

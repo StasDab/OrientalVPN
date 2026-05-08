@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     # HTTPS URL возврата после оплаты (например https://t.me/YourBot или страница сайта).
     yookassa_return_url: str = Field(default="", alias="YOOKASSA_RETURN_URL")
     admin_ids: str = Field(default="", alias="ADMIN_IDS")
+    referral_commission_bps: int = Field(
+        default=1000,
+        ge=0,
+        le=10000,
+        alias="REFERRAL_COMMISSION_BPS",
+        description="Доля платежа (копейки) пригласившему = сумма_покупки × BPS ÷ 10000; например 1000 → 10%.",
+    )
 
     database_url: str = Field(alias="DATABASE_URL")
     redis_url: str = Field(alias="REDIS_URL")

@@ -8,3 +8,7 @@ class BroadcastStates(StatesGroup):
 
 class TopupStates(StatesGroup):
     waiting_amount = State()
+
+
+class PromoStates(StatesGroup):
+    waiting_code = State()

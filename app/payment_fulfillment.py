@@ -10,8 +10,10 @@ from app.config import settings
 from app.db.models import Payment
 from app.db.repositories import (
     add_user_balance_minor,
+    credit_referrer_from_purchase,
     create_event,
     create_or_extend_subscription,
+    maybe_finalize_plan_promo,
     try_deduct_user_balance_minor,
     update_payment_status,
 )
@@ -144,6 +146,15 @@ async def provision_plan_for_payment(
             )
         await update_payment_status(session, pay_row.id, "pending_provision")
         return ProvisionOutcome(marzban_error=True)
+
+    await maybe_finalize_plan_promo(
+        session,
+        promo_id=inv.promo_id,
+        user_internal_id=pay_row.user_id,
+        payment_id=pay_row.id,
+    )
+    purchase_basis = applied + max(0, int(pay_row.amount_minor))
+    await credit_referrer_from_purchase(session, pay_row.user_id, purchase_basis)
 
     return ProvisionOutcome(ok=True, subscription_url=sub_row.subscription_url)
 

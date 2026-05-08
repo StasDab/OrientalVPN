@@ -1,16 +1,14 @@
 import html as html_escape
 import logging
 import re
-from pathlib import Path
 from uuid import uuid4
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
-    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LabeledPrice,
@@ -24,20 +22,34 @@ from app.db.repositories import (
     create_or_extend_subscription,
     create_payment,
     get_or_create_user,
+    get_promo_by_code,
+    get_promo_by_id,
     get_user_by_tg_id,
     list_active_subscriptions_for_user,
     mark_trial_used,
+    normalize_promo_code,
+    promo_discount_on_amount,
+    record_free_days_promo_redemption,
+    set_user_active_promo,
+    validate_discount_promo_for_checkout,
+    validate_promo_for_apply,
 )
 from app.db.session import SessionLocal
 from app.keyboards.main import (
     main_menu_kb,
     plans_kb,
     profile_kb,
+    promo_cancel_kb,
     subscriptions_back_kb,
     topup_cancel_kb,
 )
 from app.payment_fulfillment import fulfill_paid_payment_row
-from app.plans import LOCATION_TITLES, PLAN_MAP, format_topup_payload
+from app.plans import (
+    LOCATION_TITLES,
+    PLAN_MAP,
+    encode_plan_invoice_payload,
+    format_topup_payload,
+)
 from app.services.node_registry import (
     available_location_codes,
     pick_primary_node,
@@ -45,7 +57,7 @@ from app.services.node_registry import (
 from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
 from app.services.yookassa import YookassaError, create_redirect_payment
-from app.states import TopupStates
+from app.states import PromoStates, TopupStates
 from app.telegram_format import (
     jammer_bypass_help_html,
     subscription_url_pre_block,
@@ -65,6 +77,31 @@ MAX_TOPUP_RUB = 500_000
 
 def _is_admin_user(tg_id: int | None) -> bool:
     return tg_id is not None and tg_id in settings.admin_id_set
+
+
+def _deep_link_ref_tg_id(args: str | None) -> int | None:
+    raw = (args or "").strip()
+    if not raw.startswith("ref_"):
+        return None
+    suffix = raw[4:].strip()
+    try:
+        v = int(suffix)
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+async def _profile_discount_promo_sentence(session: object, db_user: User) -> str:
+    if not db_user.active_promo_id:
+        return ""
+    promo = await get_promo_by_id(session, db_user.active_promo_id)
+    if not promo or promo.kind not in ("percent", "fixed"):
+        return ""
+    code_esc = html_escape.escape(promo.code)
+    if promo.kind == "percent":
+        return f"\n🎟️ Промокод <code>{code_esc}</code> — скидка {promo.discount_percent}% на тариф.\n"
+    fm = promo.discount_fixed_minor or 0
+    return f"\n🎟️ Промокод <code>{code_esc}</code> — −{fm / 100:.2f} ₽ от цены тарифа.\n"
 
 
 def _callback_edit_target(call: CallbackQuery) -> Message | None:
@@ -90,6 +127,8 @@ NO_VPN_NODES_TEXT = (
     "После правки перезапустите сервис бота."
 )
 
+MAIN_MENU_TEXT_HTML = "🏠 <b>Главное меню</b>\nВыберите раздел:"
+
 HELP_TEXT = (
     "Как подключиться:\n"
     "1) Установите клиент (Happ, v2rayTun, Nekoray и т.п.).\n"
@@ -99,6 +138,8 @@ HELP_TEXT = (
     "/my — подписки, /profile — профиль, /help — эта справка.\n\n"
     "«Купить» — оформление подписки: к оплате будет сумма тарифа минус ваш баланс.\n"
     "«Пополнить баланс» в профиле — введите сумму в рублях; пополненный баланс учтётся в счёте подписки.\n\n"
+    "В профиле доступны промокоды (скидка при оплате или бесплатные дни) и ваш реферальный запуск через "
+    "ссылку вида «старт со ссылкой» от бота (подробности там же).\n\n"
     "Пробный доступ и оплата дают одну ссылку подписки со всеми серверами — она в разделе «Мои подписки»."
 )
 
@@ -140,14 +181,15 @@ async def nav_edit(
             )
 
 
-def _profile_text(db_user: User, display_username: str | None) -> str:
+def _profile_text(db_user: User, display_username: str | None, *, promo_sentence: str = "") -> str:
     uname = f"@{html_escape.escape(display_username)}" if display_username else "—"
     bal = db_user.balance_minor / 100
     return (
         "👤 <b>Профиль</b>\n"
         f"Telegram ID: <code>{db_user.tg_id}</code>\n"
         f"Username: {uname}\n\n"
-        f"💰 <b>Баланс:</b> <code>{bal:.2f} ₽</code>\n\n"
+        f"💰 <b>Баланс:</b> <code>{bal:.2f} ₽</code>"
+        f"{promo_sentence}\n\n"
         "При пополнении баланса вы указываете желаемую сумму, "
         "которая затем будет использована в счете оплаты подписки."
     )
@@ -194,40 +236,24 @@ async def _build_subscription_lines(subs: list[Subscription]) -> list[str]:
 
 
 @router.message(Command("start"))
-async def cmd_start(message: Message) -> None:
-    text = (
-        "👋 <b>Добро пожаловать в OrientalVPN!</b>\n\n"
-        "✨ Твой личный ключ к безграничному интернету:\n\n"
-        "💎 <b>Высокоскоростной и Надежный VPN:</b>\n"
-        "• ⚡️Мгновенная загрузка 4K-видео и стабильный стриминг.\n"
-        "• 🛡 Обход Глушилок (DPI): Используем технологию Stealth для надежного доступа в любых условиях.\n"
-        "• 🌍 Открытие всех заблокированных ресурсов: Instagram, TikTok, Netflix, Discord.\n"
-        "• 🔒 Полная анонимность и защита трафика."
-    )
-    banner = (settings.start_banner_url or "").strip()
-    banner_path = (settings.start_banner_path or "").strip()
-    kb = main_menu_kb(is_admin=_is_admin_user(message.from_user.id if message.from_user else None))
-    if banner_path:
-        p = Path(banner_path)
-        if not p.is_absolute():
-            p = (Path.cwd() / p).resolve()
-        if p.is_file():
-            await message.answer_photo(
-                photo=FSInputFile(str(p)),
-                caption=text,
-                parse_mode="HTML",
-                reply_markup=kb,
+async def cmd_start(message: Message, command: CommandObject) -> None:
+    if message.from_user:
+        ref_tg = _deep_link_ref_tg_id(command.args)
+        async with SessionLocal() as session:
+            await get_or_create_user(
+                session,
+                tg_id=message.from_user.id,
+                username=message.from_user.username,
+                referrer_tg_id=ref_tg,
             )
-            return
-    if banner:
-        await message.answer_photo(
-            photo=banner,
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=kb,
-        )
-        return
-    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+            await session.commit()
+    await message.answer(
+        MAIN_MENU_TEXT_HTML,
+        reply_markup=main_menu_kb(
+            is_admin=_is_admin_user(message.from_user.id if message.from_user else None),
+        ),
+        parse_mode="HTML",
+    )
 
 
 @router.message(Command("help"))
@@ -283,7 +309,7 @@ async def callback_menu_home(call: CallbackQuery, state: FSMContext) -> None:
     await ack_callback(call)
     await nav_edit(
         msg,
-        "🏠 <b>Главное меню</b>\nВыберите раздел:",
+        MAIN_MENU_TEXT_HTML,
         main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
     )
 
@@ -298,9 +324,10 @@ async def cmd_profile(message: Message) -> None:
             tg_id=message.from_user.id,
             username=message.from_user.username,
         )
+        promo_s = await _profile_discount_promo_sentence(session, u)
         await session.commit()
     await message.answer(
-        _profile_text(u, message.from_user.username),
+        _profile_text(u, message.from_user.username, promo_sentence=promo_s),
         parse_mode="HTML",
         reply_markup=profile_kb(),
     )
@@ -323,8 +350,9 @@ async def callback_profile(call: CallbackQuery, state: FSMContext) -> None:
             tg_id=call.from_user.id,
             username=call.from_user.username,
         )
+        promo_s = await _profile_discount_promo_sentence(session, u)
         await session.commit()
-    await nav_edit(msg, _profile_text(u, call.from_user.username), profile_kb())
+    await nav_edit(msg, _profile_text(u, call.from_user.username, promo_sentence=promo_s), profile_kb())
 
 
 @router.callback_query(F.data == "profile_balance")
@@ -373,7 +401,7 @@ async def topup_cancel_cb(call: CallbackQuery, state: FSMContext) -> None:
     await ack_callback(call)
     await nav_edit(
         msg,
-        "🏠 <b>Главное меню</b>\nВыберите раздел:",
+        MAIN_MENU_TEXT_HTML,
         main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
     )
 
@@ -382,8 +410,9 @@ async def topup_cancel_cb(call: CallbackQuery, state: FSMContext) -> None:
 async def topup_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
-        "Пополнение отменено.",
+        MAIN_MENU_TEXT_HTML + "\n\n<i>Пополнение отменено.</i>",
         reply_markup=main_menu_kb(is_admin=_is_admin_user(message.from_user.id if message.from_user else None)),
+        parse_mode="HTML",
     )
 
 
@@ -489,6 +518,133 @@ async def topup_amount_entered(message: Message, state: FSMContext) -> None:
     )
 
 
+@router.callback_query(F.data == "profile_promo")
+async def profile_promo_open(call: CallbackQuery, state: FSMContext) -> None:
+    if not call.from_user:
+        await ack_callback(call)
+        return
+    await ack_callback(call)
+    await state.set_state(PromoStates.waiting_code)
+    await call.message.answer(
+        "🎟️ <b>Промокод</b>\nОтправьте код одним сообщением.",
+        parse_mode="HTML",
+        reply_markup=promo_cancel_kb(),
+    )
+
+
+@router.callback_query(StateFilter(PromoStates.waiting_code), F.data == "promo_cancel")
+async def promo_cancel_cb(call: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await ack_callback(call, text="Отменено.")
+
+
+@router.message(StateFilter(PromoStates.waiting_code), F.text)
+async def promo_code_enter(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+    raw = (message.text or "").strip()
+    if raw.startswith("/"):
+        return
+    code = normalize_promo_code(raw)
+    if not code:
+        await message.answer("Код не распознан. Пример: SUMMER2026")
+        return
+
+    async with SessionLocal() as session:
+        user = await get_or_create_user(
+            session,
+            tg_id=message.from_user.id,
+            username=message.from_user.username,
+        )
+        pr = await get_promo_by_code(session, code)
+        if not pr:
+            await message.answer("Такого промокода нет или он отключён.")
+            return
+        err = await validate_promo_for_apply(session, pr, user.id)
+        if err:
+            await message.answer(err)
+            return
+
+        if pr.kind == "free_days":
+            days = int(pr.bonus_days or 0)
+            if days <= 0:
+                await message.answer("У промокода задан некорректный срок. Обратитесь в поддержку.")
+                return
+            if not available_location_codes():
+                await message.answer(NO_VPN_NODES_TEXT)
+                return
+            chosen = pick_primary_node()
+            if not chosen:
+                await message.answer("Нет доступных серверов в конфигурации.")
+                return
+            loc_code = chosen.location_code
+            provider = MarzbanAdapter(
+                panel_url=chosen.api_url,
+                username=settings.panel_username,
+                password=settings.panel_password,
+            )
+            try:
+                result = await with_retry(
+                    lambda: provider.provision_access(
+                        message.from_user.id,
+                        loc_code,
+                        node=chosen,
+                        days=days,
+                    ),
+                    retries=settings.provision_retries,
+                    base_delay_seconds=1.0,
+                )
+            except Exception:
+                await session.rollback()
+                log.exception("promo_free_days_failed", extra={"tg_id": message.from_user.id, "code": code})
+                await message.answer("Не удалось выдать доступ по промокоду. Попробуйте позже.")
+                return
+            sub_row = await create_or_extend_subscription(
+                session=session,
+                user_id=user.id,
+                external_user_id=result.external_user_id,
+                subscription_url=result.subscription_url,
+                location_code="all",
+                node_api_url=chosen.api_url,
+                duration_days=days,
+                panel_ends_at=result.ends_at,
+            )
+            await record_free_days_promo_redemption(session, pr.id, user.id)
+            await session.commit()
+            await state.clear()
+            await message.answer(
+                f"✅ Промокод применён: <b>{days}</b> дн. доступа ко всем серверам.\n"
+                f"{subscription_url_pre_block(sub_row.subscription_url)}\n"
+                "Откройте «Мои подписки» для ссылки позже.",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=main_menu_kb(is_admin=_is_admin_user(message.from_user.id)),
+            )
+            return
+
+        if pr.kind in ("percent", "fixed"):
+            await set_user_active_promo(session, user.id, pr.id)
+            await session.commit()
+            await state.clear()
+            pct = ""
+            if pr.kind == "percent":
+                pct = f"Скидка <b>{pr.discount_percent}%</b> на цену тарифа при оплате в «Купить».\n\n"
+            else:
+                fm = pr.discount_fixed_minor or 0
+                pct = f"Фикс. скидка <code>{fm / 100:.2f} ₽</code> от цены тарифа при оплате.\n\n"
+            await message.answer(
+                "🎟️ <b>Промокод сохранён</b>\n"
+                f"<code>{html_escape.escape(pr.code)}</code>\n"
+                f"{pct}"
+                "Следующее оформление подписки учтёт скидку автоматически.",
+                parse_mode="HTML",
+                reply_markup=main_menu_kb(is_admin=_is_admin_user(message.from_user.id)),
+            )
+            return
+
+        await message.answer("Тип промокода не поддерживается в боте.")
+
+
 @router.callback_query(F.data == "jammer_help")
 async def jammer_help(call: CallbackQuery) -> None:
     msg = _callback_edit_target(call)
@@ -567,17 +723,39 @@ async def callback_plan(call: CallbackQuery) -> None:
         return
 
     plan_amount = int(plan["amount"])
+    discounted = plan_amount
+    promo_invoice_id: int | None = None
+    promo_discount_minor = 0
+    promo_discount_html = ""
+
     async with SessionLocal() as session:
         db_user = await get_or_create_user(
             session,
             tg_id=call.from_user.id,
             username=call.from_user.username,
         )
-        apply_minor = min(int(db_user.balance_minor), plan_amount)
+        if db_user.active_promo_id:
+            pr = await get_promo_by_id(session, db_user.active_promo_id)
+            if pr and pr.kind in ("percent", "fixed"):
+                chk = await validate_discount_promo_for_checkout(session, pr, db_user.id)
+                if not chk:
+                    discounted, promo_discount_minor = promo_discount_on_amount(plan_amount, pr)
+                    promo_invoice_id = pr.id
+                    promo_discount_html = (
+                        f'\n<i>Промокод <code>{html_escape.escape(pr.code)}</code>: '
+                        f"−{promo_discount_minor / 100:.2f} ₽ к цене тарифа.</i>"
+                    )
+        apply_minor = min(int(db_user.balance_minor), discounted)
         await session.commit()
 
-    charge = plan_amount - apply_minor
-    payload = f"{plan_code}:all:{call.from_user.id}:{apply_minor}"
+    charge = discounted - apply_minor
+    payload = encode_plan_invoice_payload(
+        plan_code=plan_code,
+        location_code="all",
+        buyer_tg_id=call.from_user.id,
+        balance_applied_minor=apply_minor,
+        promo_id=promo_invoice_id,
+    )
 
     await ack_callback(call)
     pay_hint = ""
@@ -592,6 +770,7 @@ async def callback_plan(call: CallbackQuery) -> None:
     await nav_edit(
         msg,
         "💳 <b>Оплата подписки</b>\nДоступ ко <b>всем серверам</b> в одной ссылке."
+        f"{promo_discount_html}"
         f"{pay_hint}",
         plans_kb(back_to=payment_step_back, payment_step_back=payment_step_back),
     )
@@ -603,7 +782,7 @@ async def callback_plan(call: CallbackQuery) -> None:
                 tg_id=call.from_user.id,
                 username=call.from_user.username,
             )
-            if u.balance_minor < plan_amount:
+            if u.balance_minor < discounted:
                 await call.message.answer(
                     "Недостаточно баланса. Откройте профиль и проверьте сумму.",
                 )
@@ -665,6 +844,8 @@ async def callback_plan(call: CallbackQuery) -> None:
                     "plan_code": plan_code,
                     "location_code": "all",
                     "balance_applied_minor": str(apply_minor),
+                    "promo_id": str(promo_invoice_id) if promo_invoice_id else "",
+                    "discounted_minor": str(discounted),
                 },
             )
         except YookassaError:
@@ -710,6 +891,8 @@ async def callback_plan(call: CallbackQuery) -> None:
         extra = ""
         if apply_minor > 0:
             extra = f"\nУчтено с баланса: <code>{apply_minor / 100:.2f} ₽</code>."
+        if promo_discount_minor > 0:
+            extra += f"\nСкидка по промокоду: <code>{promo_discount_minor / 100:.2f} ₽</code>."
         await call.message.answer(
             f"💳 Счёт: <b>{html_escape.escape(plan['title'])}</b>\n"
             f"К оплате: <code>{amount_rub} ₽</code>{extra}\n\n"
@@ -733,6 +916,8 @@ async def callback_plan(call: CallbackQuery) -> None:
     desc = "OrientalVPN — все серверы в одной подписке"
     if apply_minor > 0:
         desc += f" (с баланса −{apply_minor / 100:.2f} ₽)"
+    if promo_discount_minor > 0:
+        desc += f" (промо −{promo_discount_minor / 100:.2f} ₽)"
     prices = [LabeledPrice(label=plan["title"], amount=charge)]
     await call.bot.send_invoice(
         chat_id=msg.chat.id,

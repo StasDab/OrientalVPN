@@ -3,23 +3,216 @@ import json
 
 from sqlalchemy import Select, func, select, update
 
+from app.config import settings
 from app.datetime_util import utc_now_naive
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Event, Payment, Subscription, User
+from app.db.models import Event, Payment, PromoCode, PromoRedemption, Subscription, User
 from app.subscription_urls import build_subscription_urls
 
 
-async def get_or_create_user(session: AsyncSession, tg_id: int, username: str | None) -> User:
+def normalize_promo_code(raw: str) -> str:
+    return (raw or "").strip().upper()
+
+
+async def get_or_create_user(
+    session: AsyncSession,
+    tg_id: int,
+    username: str | None,
+    *,
+    referrer_tg_id: int | None = None,
+) -> User:
     query: Select[tuple[User]] = select(User).where(User.tg_id == tg_id)
     row = await session.execute(query)
     user = row.scalar_one_or_none()
     if user:
         return user
-    user = User(tg_id=tg_id, username=username)
+    ref_internal: int | None = None
+    if referrer_tg_id is not None and referrer_tg_id != tg_id:
+        rr = await session.execute(select(User).where(User.tg_id == referrer_tg_id))
+        ref_user = rr.scalar_one_or_none()
+        if ref_user:
+            ref_internal = ref_user.id
+    user = User(tg_id=tg_id, username=username, referred_by_user_id=ref_internal)
     session.add(user)
     await session.flush()
     return user
+
+
+async def get_promo_by_id(session: AsyncSession, promo_id: int) -> PromoCode | None:
+    row = await session.execute(select(PromoCode).where(PromoCode.id == promo_id))
+    return row.scalar_one_or_none()
+
+
+async def get_promo_by_code(session: AsyncSession, code: str) -> PromoCode | None:
+    c = normalize_promo_code(code)
+    if not c:
+        return None
+    row = await session.execute(select(PromoCode).where(PromoCode.code == c))
+    return row.scalar_one_or_none()
+
+
+def promo_discount_on_amount(plan_amount_minor: int, promo: PromoCode) -> tuple[int, int]:
+    """Возвращает (итогова_цена_коп, скидка_коп) для промо percent/fixed."""
+    amt = max(0, int(plan_amount_minor))
+    if promo.kind == "percent":
+        pct = int(promo.discount_percent or 0)
+        pct = max(0, min(100, pct))
+        discount = amt * pct // 100 if pct else 0
+    elif promo.kind == "fixed":
+        discount = int(promo.discount_fixed_minor or 0)
+        discount = max(0, min(amt, discount))
+    else:
+        return amt, 0
+    effective = max(0, amt - discount)
+    return effective, amt - effective
+
+
+async def count_promo_redemptions_for_user(session: AsyncSession, promo_id: int, user_id: int) -> int:
+    row = await session.execute(
+        select(func.count())
+        .select_from(PromoRedemption)
+        .where(PromoRedemption.promo_id == promo_id, PromoRedemption.user_id == user_id)
+    )
+    return int(row.scalar_one() or 0)
+
+
+def promo_quota_sync_checks(promo: PromoCode) -> str | None:
+    """Проверки лимита/срока без обращений к счётчикам пользователя."""
+    now = utc_now_naive()
+    if not promo.is_active:
+        return "Промокод отключён."
+    if promo.expires_at is not None and promo.expires_at <= now:
+        return "Срок промокода истёк."
+    if promo.max_uses is not None and promo.uses_count >= promo.max_uses:
+        return "Лимит активаций исчерпан."
+    return None
+
+
+async def validate_promo_for_apply(session: AsyncSession, promo: PromoCode, user_id: int) -> str | None:
+    err = promo_quota_sync_checks(promo)
+    if err:
+        return err
+    used = await count_promo_redemptions_for_user(session, promo.id, user_id)
+    if used >= promo.max_uses_per_user:
+        return "Вы уже использовали этот промокод максимально допустимое число раз."
+    return None
+
+
+async def validate_discount_promo_for_checkout(session: AsyncSession, promo: PromoCode, user_id: int) -> str | None:
+    if promo.kind not in ("percent", "fixed"):
+        return "Этот промокод не даёт скидку при оплате."
+    return await validate_promo_for_apply(session, promo, user_id)
+
+
+async def set_user_active_promo(session: AsyncSession, user_id: int, promo_id: int | None) -> None:
+    await session.execute(update(User).where(User.id == user_id).values(active_promo_id=promo_id))
+
+
+async def create_promo_code(
+    session: AsyncSession,
+    *,
+    code: str,
+    kind: str,
+    discount_percent: int | None = None,
+    discount_fixed_minor: int | None = None,
+    bonus_days: int | None = None,
+    max_uses: int | None = None,
+    max_uses_per_user: int = 1,
+    expires_at: datetime | None = None,
+) -> PromoCode:
+    c = normalize_promo_code(code)
+    row = PromoCode(
+        code=c,
+        kind=kind,
+        discount_percent=discount_percent,
+        discount_fixed_minor=discount_fixed_minor,
+        bonus_days=bonus_days,
+        max_uses=max_uses,
+        max_uses_per_user=max_uses_per_user,
+        expires_at=expires_at,
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def deactivate_promo(session: AsyncSession, code: str) -> bool:
+    c = normalize_promo_code(code)
+    res = await session.execute(update(PromoCode).where(PromoCode.code == c).values(is_active=False))
+    return (res.rowcount or 0) > 0  # type: ignore[union-attr]
+
+
+async def list_promo_codes_admin(session: AsyncSession, limit: int = 30) -> list[PromoCode]:
+    row = await session.execute(select(PromoCode).order_by(PromoCode.id.desc()).limit(limit))
+    return list(row.scalars().all())
+
+
+async def count_users_with_referrer(session: AsyncSession) -> int:
+    row = await session.execute(
+        select(func.count()).select_from(User).where(User.referred_by_user_id.is_not(None))
+    )
+    return int(row.scalar_one() or 0)
+
+
+async def count_active_subscriptions_by_node_url(session: AsyncSession) -> dict[str, int]:
+    stmt = (
+        select(Subscription.node_api_url, func.count())
+        .where(Subscription.status == "active")
+        .group_by(Subscription.node_api_url)
+    )
+    rows = await session.execute(stmt)
+    return {str(u or ""): int(n or 0) for u, n in rows.all()}
+
+
+async def maybe_finalize_plan_promo(
+    session: AsyncSession,
+    *,
+    promo_id: int | None,
+    user_internal_id: int,
+    payment_id: int,
+) -> None:
+    if not promo_id:
+        return
+    existing = await session.execute(
+        select(PromoRedemption.id).where(PromoRedemption.payment_id == payment_id)
+    )
+    if existing.scalar_one_or_none() is not None:
+        return
+    promo = await get_promo_by_id(session, promo_id)
+    if not promo or promo.kind not in ("percent", "fixed"):
+        return
+    session.add(PromoRedemption(promo_id=promo_id, user_id=user_internal_id, payment_id=payment_id))
+    await session.execute(update(PromoCode).where(PromoCode.id == promo_id).values(uses_count=PromoCode.uses_count + 1))
+    await session.execute(
+        update(User)
+        .where(User.id == user_internal_id, User.active_promo_id == promo_id)
+        .values(active_promo_id=None)
+    )
+
+
+async def record_free_days_promo_redemption(session: AsyncSession, promo_id: int, user_id: int) -> None:
+    session.add(PromoRedemption(promo_id=promo_id, user_id=user_id, payment_id=None))
+    await session.execute(update(PromoCode).where(PromoCode.id == promo_id).values(uses_count=PromoCode.uses_count + 1))
+
+
+async def credit_referrer_from_purchase(session: AsyncSession, buyer_internal_id: int, purchase_minor: int) -> None:
+    if purchase_minor <= 0:
+        return
+    bps = int(settings.referral_commission_bps)
+    bonus = purchase_minor * bps // 10000
+    if bonus <= 0:
+        return
+    row = await session.execute(select(User).where(User.id == buyer_internal_id))
+    buyer = row.scalar_one_or_none()
+    if not buyer or not buyer.referred_by_user_id:
+        return
+    ref_id = buyer.referred_by_user_id
+    rr = await session.execute(select(User).where(User.id == ref_id))
+    ref_u = rr.scalar_one_or_none()
+    if not ref_u or ref_u.id == buyer.id:
+        return
+    await add_user_balance_minor(session, ref_u.id, bonus)
 
 
 async def get_user_by_tg_id(session: AsyncSession, tg_id: int) -> User | None:
