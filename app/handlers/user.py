@@ -540,22 +540,11 @@ async def topup_cancel(message: Message, state: FSMContext) -> None:
         await message.answer(START_WELCOME_HTML + "\n\n<i>Пополнение отменено.</i>")
 
 
-@router.message(TopupStates.waiting_amount, F.text)
-async def topup_amount_entered(message: Message, state: FSMContext) -> None:
+async def _execute_topup_payment(message: Message, rub: int) -> None:
+    """Создать платёж пополнения (ЮKassa или Telegram invoice) после валидации суммы."""
     if not message.from_user:
         return
-    raw = (message.text or "").strip()
-    if raw.startswith("/"):
-        return
-    if not raw.isdigit():
-        await message.answer("Нужно целое число рублей, например: 500")
-        return
-    rub = int(raw)
-    if rub < MIN_TOPUP_RUB or rub > MAX_TOPUP_RUB:
-        await message.answer(f"Допустимо от {MIN_TOPUP_RUB} до {MAX_TOPUP_RUB} ₽.")
-        return
     minor = rub * 100
-    await state.clear()
     payload = format_topup_payload(message.from_user.id, minor)
 
     if settings.use_yookassa:
@@ -627,7 +616,8 @@ async def topup_amount_entered(message: Message, state: FSMContext) -> None:
 
     if not (settings.provider_token or "").strip():
         await message.answer(
-            "Платежи Telegram не настроены: задайте <code>PROVIDER_TOKEN</code> в .env.",
+            "Оплата не настроена: укажите <code>YOOKASSA_*</code> и при необходимости "
+            "<code>PAYMENT_PROVIDER=yookassa</code>, либо <code>PROVIDER_TOKEN</code> для Telegram Payments.",
             parse_mode="HTML",
         )
         return
@@ -642,6 +632,52 @@ async def topup_amount_entered(message: Message, state: FSMContext) -> None:
         prices=[LabeledPrice(label=f"Пополнение {rub} ₽", amount=minor)],
         reply_markup=payment_cancel_to_main_kb(),
     )
+
+
+def _looks_like_topup_prompt(msg: Message) -> bool:
+    t = msg.text or msg.caption or ""
+    return isinstance(t, str) and "Пополнение баланса" in t
+
+
+@router.message(TopupStates.waiting_amount, F.text)
+async def topup_amount_entered(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+    raw = (message.text or "").strip()
+    if raw.startswith("/"):
+        return
+    if not raw.isdigit():
+        await message.answer("Нужно целое число рублей, например: 500")
+        return
+    rub = int(raw)
+    if rub < MIN_TOPUP_RUB or rub > MAX_TOPUP_RUB:
+        await message.answer(f"Допустимо от {MIN_TOPUP_RUB} до {MAX_TOPUP_RUB} ₽.")
+        return
+    await state.clear()
+    await _execute_topup_payment(message, rub)
+
+
+@router.message(
+    ~StateFilter(TopupStates.waiting_amount),
+    F.text.regexp(r"^[1-9]\d{0,8}$"),
+    F.reply_to_message,
+)
+async def topup_amount_reply_fallback(message: Message, state: FSMContext) -> None:
+    """
+    Рестарт топап после ответом на промпт пополнения, если состояние FSM потерялось (после redeploy без Redis).
+    """
+    rep = message.reply_to_message
+    if rep is None or not rep.from_user or not rep.from_user.is_bot or not _looks_like_topup_prompt(rep):
+        return
+    if not message.from_user:
+        return
+    raw = (message.text or "").strip()
+    rub = int(raw)
+    if rub < MIN_TOPUP_RUB or rub > MAX_TOPUP_RUB:
+        await message.answer(f"Допустимо от {MIN_TOPUP_RUB} до {MAX_TOPUP_RUB} ₽.")
+        return
+    await state.clear()
+    await _execute_topup_payment(message, rub)
 
 
 @router.callback_query(F.data == "profile_promo")
@@ -1068,9 +1104,8 @@ async def callback_plan(call: CallbackQuery) -> None:
 
     if not (settings.provider_token or "").strip():
         await call.message.answer(
-            "Платежи Telegram не настроены: в .env задайте <code>PROVIDER_TOKEN</code> "
-            "(BotFather → бот → Payments, токен после привязки ЮKassa) и перезапустите бота. "
-            "Должно быть <code>PAYMENT_PROVIDER=telegram</code>.",
+            "Оплата не настроена: задайте ключи ЮKassa и при необходимости "
+            "<code>PAYMENT_PROVIDER=yookassa</code>, либо <code>PROVIDER_TOKEN</code> Telegram Payments.",
             parse_mode="HTML",
             disable_web_page_preview=True,
         )

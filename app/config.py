@@ -68,11 +68,22 @@ class Settings(BaseSettings):
 
     @property
     def use_yookassa(self) -> bool:
-        return (
-            self.payment_provider.strip().lower() == "yookassa"
-            and bool(self.yookassa_shop_id.strip())
+        """
+        ЮKassa: явно PAYMENT_PROVIDER=yookassa и ключи, либо (частый кейс на VPS)
+        PAYMENT_PROVIDER оставили telegram/default, ключи ЮKassa заданы, а PROVIDER_TOKEN пуст —
+        иначе бот упирается в Telegram Payments без токена.
+        """
+        if not (
+            bool(self.yookassa_shop_id.strip())
             and bool(self.yookassa_secret_key.strip())
-        )
+        ):
+            return False
+        prov = self.payment_provider.strip().lower()
+        if prov == "yookassa":
+            return True
+        if prov == "telegram":
+            return not bool(self.provider_token.strip())
+        return False
 
     @property
     def vpn_nodes(self) -> list[dict]:
