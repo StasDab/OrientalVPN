@@ -3,8 +3,11 @@
 Выставить в контейнере Postgres пароль роли такой же, как в DATABASE_URL в .env
 (имя роли берётся из URL: user:password@host, не только postgres).
 
-Запуск на VPS (из корня репозитория, где лежит .env):
-  /opt/myvpn/.venv/bin/python scripts/fix_postgres_password.py
+Запуск на VPS (из корня репозитория):
+
+  cd /opt/myvpn && .venv/bin/python scripts/fix_postgres_password.py
+
+Читается `.env` в корне или `app/.env`.
 
 Переменная окружения POSTGRES_CONTAINER — имя контейнера (по умолчанию myvpn-postgres).
 """
@@ -33,7 +36,9 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     env_path = root / ".env"
     if not env_path.is_file():
-        print(f"Нет файла {env_path}", file=sys.stderr)
+        env_path = root / "app" / ".env"
+    if not env_path.is_file():
+        print(f"Нет файла {root / '.env'} ни {root / 'app' / '.env'}", file=sys.stderr)
         return 1
     text = env_path.read_text(encoding="utf-8")
     m = re.search(r"^DATABASE_URL=(.*)$", text, re.MULTILINE)
