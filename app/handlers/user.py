@@ -242,7 +242,11 @@ async def nav_edit(
     reply_markup: InlineKeyboardMarkup | None = None,
     *,
     parse_mode: str | None = "HTML",
-) -> None:
+) -> Message:
+    """
+    Один «экран» меню: для сообщения с фото/инвойсом и т.п. нельзя edit_text —
+    удаляем и шлём текстовое сообщение, чтобы инлайн-кнопки оставались рабочими.
+    """
     if len(text) > _TELEGRAM_TEXT_MAX:
         text = (
             text[: _TELEGRAM_TEXT_MAX - 80]
@@ -254,19 +258,30 @@ async def nav_edit(
         parse_mode=parse_mode,
         disable_web_page_preview=True,
     )
+    bot = message.bot
+    chat_id = message.chat.id
+
+    if message.content_type != ContentType.TEXT:
+        try:
+            await message.delete()
+        except TelegramBadRequest:
+            pass
+        return await bot.send_message(chat_id=chat_id, **kwargs)
+
     try:
         await message.edit_text(**kwargs)
+        return message
     except TelegramBadRequest as e:
         err = (getattr(e, "message", None) or str(e)).lower()
         if "message is not modified" in err or err.strip() == "bad request: message is not modified":
-            return
+            return message
         log.warning("menu_edit_failed_try_answer", extra={"error": str(e)})
         try:
-            await message.answer(**kwargs)
+            return await message.answer(**kwargs)
         except TelegramBadRequest as e2:
             log.warning("menu_answer_failed_try_plain", extra={"error": str(e2)})
             plain = re.sub(r"<[^>]+>", "", text).strip()[:_TELEGRAM_TEXT_MAX]
-            await message.answer(
+            return await message.answer(
                 plain or "Откройте меню: /start",
                 reply_markup=reply_markup,
                 disable_web_page_preview=True,
@@ -418,11 +433,7 @@ async def callback_menu_home(call: CallbackQuery, state: FSMContext) -> None:
     if msg.content_type == ContentType.INVOICE:
         await send_welcome_banner_new_message(call.bot, msg.chat.id, tg_uid=tg_uid)
         return
-    try:
-        await call.bot.delete_message(chat_id=msg.chat.id, message_id=msg.message_id)
-    except TelegramBadRequest:
-        log.debug("menu_home_could_not_delete_message", extra={"mid": getattr(msg, "message_id", None)})
-    await send_welcome_banner_new_message(call.bot, msg.chat.id, tg_uid=tg_uid)
+    await nav_edit(msg, START_WELCOME_HTML, kb)
 
 
 @router.message(Command("profile"))
@@ -494,17 +505,21 @@ async def profile_topup(call: CallbackQuery, state: FSMContext) -> None:
     if not call.from_user:
         await ack_callback(call)
         return
+    msg = _callback_edit_target(call)
+    if not msg:
+        await ack_callback(call, text="Откройте меню: /start", show_alert=True)
+        return
     await ack_callback(call)
     await state.set_state(TopupStates.waiting_amount)
-    await call.message.answer(
+    await nav_edit(
+        msg,
         f"💳 <b>Пополнение баланса</b>\n"
         f"Отправьте число — сумма в <b>рублях</b> (от {MIN_TOPUP_RUB} до {MAX_TOPUP_RUB}).",
-        parse_mode="HTML",
-        reply_markup=topup_cancel_kb(),
+        topup_cancel_kb(),
     )
 
 
-@router.callback_query(StateFilter(TopupStates.waiting_amount), F.data == "topup_cancel")
+@router.callback_query(F.data == "topup_cancel")
 async def topup_cancel_cb(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     msg = _callback_edit_target(call)
@@ -512,13 +527,8 @@ async def topup_cancel_cb(call: CallbackQuery, state: FSMContext) -> None:
         await ack_callback(call, text="Пополнение отменено.")
         return
     await ack_callback(call)
-    try:
-        await call.bot.delete_message(chat_id=msg.chat.id, message_id=msg.message_id)
-    except TelegramBadRequest:
-        pass
-    await send_welcome_banner_new_message(
-        call.bot, msg.chat.id, tg_uid=call.from_user.id if call.from_user else None
-    )
+    tg_uid = call.from_user.id if call.from_user else None
+    await nav_edit(msg, START_WELCOME_HTML, _welcome_main_kb(tg_uid))
 
 
 @router.message(Command("cancel"), StateFilter(TopupStates.waiting_amount))
@@ -639,12 +649,16 @@ async def profile_promo_open(call: CallbackQuery, state: FSMContext) -> None:
     if not call.from_user:
         await ack_callback(call)
         return
+    msg = _callback_edit_target(call)
+    if not msg:
+        await ack_callback(call, text="Откройте меню: /start", show_alert=True)
+        return
     await ack_callback(call)
     await state.set_state(PromoStates.waiting_code)
-    await call.message.answer(
+    await nav_edit(
+        msg,
         "🎟️ <b>Промокод</b>\nОтправьте код одним сообщением.",
-        parse_mode="HTML",
-        reply_markup=promo_cancel_kb(),
+        promo_cancel_kb(),
     )
 
 
@@ -692,11 +706,12 @@ async def profile_referrals(call: CallbackQuery, state: FSMContext) -> None:
         regs = await count_referrals_registered(session, u.id)
         paid = await count_referrals_with_tariff_payment(session, u.id)
         await session.commit()
+    ref_bonus_pct = settings.referral_commission_bps / 100.0
     text = (
         "🤝 <b>Пригласите друга — оба экономят время</b>\n\n"
         "Отправляйте ссылку ниже: если человек <b>впервые</b> нажмёт /start через неё, "
-        "будет учтено приглашение. После его оплаты тарифа вам может начисляться бонус на баланс "
-        "(процент настраивает администратор).\n\n"
+        "будет учтено приглашение. После оплаты им тарифа вам на баланс начисляется "
+        f"<b>{ref_bonus_pct:.0f}%</b> от суммы его платежа (после скидок).\n\n"
         "<b>Ваша персональная ссылка</b>\n"
         f"{html_escape.escape(link)}\n\n"
         "<b>По счёту приглашений в боте:</b>\n"
@@ -890,6 +905,8 @@ async def callback_plan(call: CallbackQuery) -> None:
         await ack_callback(call, text="Тариф не найден", show_alert=True)
         return
 
+    await ack_callback(call)
+
     plan_amount = int(plan["amount"])
     discounted = plan_amount
     promo_invoice_id: int | None = None
@@ -919,8 +936,6 @@ async def callback_plan(call: CallbackQuery) -> None:
         balance_applied_minor=apply_minor,
         promo_id=promo_invoice_id,
     )
-
-    await ack_callback(call)
 
     if charge == 0:
         async with SessionLocal() as session:
