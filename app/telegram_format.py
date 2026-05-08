@@ -47,7 +47,7 @@ def tariffs_select_html(balance_rub: str = "0 ₽") -> str:
     ]
     return (
         f"💰 <b>Ваш баланс:</b> <code>{bal}</code>\n"
-        "☑️ <b>Выберите тариф (₽):</b>\n\n"
+        "✅ <b>Выберите тариф (₽):</b>\n\n"
         + "\n".join(blocks)
     )
 

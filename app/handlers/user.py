@@ -22,6 +22,8 @@ from app.config import settings
 from app.datetime_util import naive_utc_from_timestamp, utc_now_naive
 from app.db.models import Subscription, User
 from app.db.repositories import (
+    count_referrals_registered,
+    count_referrals_with_tariff_payment,
     create_or_extend_subscription,
     create_payment,
     get_or_create_user,
@@ -42,6 +44,7 @@ from app.keyboards.main import (
     main_menu_kb,
     plans_kb,
     profile_kb,
+    profile_only_back_kb,
     promo_cancel_kb,
     subscriptions_back_kb,
     topup_cancel_kb,
@@ -223,9 +226,14 @@ async def send_welcome_banner_new_message(bot: Bot, chat_id: int, *, tg_uid: int
 def payment_cancel_to_main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отменить оплату", callback_data="menu_home")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data="menu_home")],
         ]
     )
+
+
+def referral_deeplink(tg_uid: int) -> str:
+    uname = settings.public_bot_username.strip().lstrip("@")
+    return f"https://t.me/{uname}?start=ref_{int(tg_uid)}"
 
 
 async def nav_edit(
@@ -356,8 +364,18 @@ async def callback_help(call: CallbackQuery) -> None:
 
 @router.message(Command("buy"))
 async def cmd_buy(message: Message) -> None:
+    if not message.from_user:
+        return
+    async with SessionLocal() as session:
+        db_user = await get_or_create_user(
+            session,
+            tg_id=message.from_user.id,
+            username=message.from_user.username,
+        )
+        bal_txt = f"{db_user.balance_minor / 100:.2f} ₽"
+        await session.commit()
     await message.answer(
-        tariffs_select_html(),
+        tariffs_select_html(bal_txt),
         reply_markup=plans_kb(back_to="menu_home", payment_step_back="buy"),
         parse_mode="HTML",
     )
@@ -370,9 +388,19 @@ async def callback_buy(call: CallbackQuery) -> None:
         await ack_callback(call, text="Откройте меню: /start", show_alert=True)
         return
     await ack_callback(call)
+    async with SessionLocal() as session:
+        if not call.from_user:
+            return
+        db_user = await get_or_create_user(
+            session,
+            tg_id=call.from_user.id,
+            username=call.from_user.username,
+        )
+        bal_txt = f"{db_user.balance_minor / 100:.2f} ₽"
+        await session.commit()
     await nav_edit(
         msg,
-        tariffs_select_html(),
+        tariffs_select_html(bal_txt),
         plans_kb(back_to="menu_home", payment_step_back="buy"),
     )
 
@@ -390,7 +418,11 @@ async def callback_menu_home(call: CallbackQuery, state: FSMContext) -> None:
     if msg.content_type == ContentType.INVOICE:
         await send_welcome_banner_new_message(call.bot, msg.chat.id, tg_uid=tg_uid)
         return
-    await nav_edit(msg, START_WELCOME_HTML, kb)
+    try:
+        await call.bot.delete_message(chat_id=msg.chat.id, message_id=msg.message_id)
+    except TelegramBadRequest:
+        log.debug("menu_home_could_not_delete_message", extra={"mid": getattr(msg, "message_id", None)})
+    await send_welcome_banner_new_message(call.bot, msg.chat.id, tg_uid=tg_uid)
 
 
 @router.message(Command("profile"))
@@ -435,7 +467,9 @@ async def callback_profile(call: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data == "profile_balance")
-async def profile_balance(call: CallbackQuery) -> None:
+async def profile_balance_legacy(call: CallbackQuery, state: FSMContext) -> None:
+    """Старые сообщения могли содержать кнопку «Мой баланс» — показываем актуальный профиль."""
+    await state.clear()
     if not call.from_user:
         await ack_callback(call)
         return
@@ -445,14 +479,14 @@ async def profile_balance(call: CallbackQuery) -> None:
         return
     await ack_callback(call)
     async with SessionLocal() as session:
-        u = await get_user_by_tg_id(session, call.from_user.id)
-        bal = (u.balance_minor if u else 0) / 100
-    await nav_edit(
-        msg,
-        f"💰 <b>Мой баланс</b>\nСейчас: <code>{bal:.2f} ₽</code>\n\n"
-        "Средства спишутся при оплате подписки (или целиком, если баланса хватает на тариф).",
-        subscriptions_back_kb(),
-    )
+        u = await get_or_create_user(
+            session,
+            tg_id=call.from_user.id,
+            username=call.from_user.username,
+        )
+        promo_s = await _profile_discount_promo_sentence(session, u)
+        await session.commit()
+    await nav_edit(msg, _profile_text(u, call.from_user.username, promo_sentence=promo_s), profile_kb())
 
 
 @router.callback_query(F.data == "profile_topup")
@@ -478,17 +512,22 @@ async def topup_cancel_cb(call: CallbackQuery, state: FSMContext) -> None:
         await ack_callback(call, text="Пополнение отменено.")
         return
     await ack_callback(call)
-    await nav_edit(msg, START_WELCOME_HTML, _welcome_main_kb(call.from_user.id if call.from_user else None))
+    try:
+        await call.bot.delete_message(chat_id=msg.chat.id, message_id=msg.message_id)
+    except TelegramBadRequest:
+        pass
+    await send_welcome_banner_new_message(
+        call.bot, msg.chat.id, tg_uid=call.from_user.id if call.from_user else None
+    )
 
 
 @router.message(Command("cancel"), StateFilter(TopupStates.waiting_amount))
 async def topup_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(
-        START_WELCOME_HTML + "\n\n<i>Пополнение отменено.</i>",
-        reply_markup=_welcome_main_kb(message.from_user.id if message.from_user else None),
-        parse_mode="HTML",
-    )
+    if message.from_user:
+        await reply_welcome_from_user_msg(message)
+    else:
+        await message.answer(START_WELCOME_HTML + "\n\n<i>Пополнение отменено.</i>")
 
 
 @router.message(TopupStates.waiting_amount, F.text)
@@ -565,7 +604,7 @@ async def topup_amount_entered(message: Message, state: FSMContext) -> None:
             inline_keyboard=[
                 [InlineKeyboardButton(text="💳 Оплатить (ЮKassa)", url=pay_url)],
                 [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"yk:{pay_id}")],
-                [InlineKeyboardButton(text="❌ Отменить оплату", callback_data="menu_home")],
+                [InlineKeyboardButton(text="❌ Отменить", callback_data="menu_home")],
             ]
         )
         await message.answer(
@@ -609,10 +648,63 @@ async def profile_promo_open(call: CallbackQuery, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(StateFilter(PromoStates.waiting_code), F.data == "promo_cancel")
+@router.callback_query(F.data == "promo_cancel")
 async def promo_cancel_cb(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await ack_callback(call, text="Отменено.")
+    if not call.from_user:
+        await ack_callback(call)
+        return
+    await ack_callback(call)
+    msg = _callback_edit_target(call)
+    async with SessionLocal() as session:
+        u = await get_or_create_user(
+            session,
+            tg_id=call.from_user.id,
+            username=call.from_user.username,
+        )
+        promo_s = await _profile_discount_promo_sentence(session, u)
+        await session.commit()
+    if msg:
+        await nav_edit(msg, _profile_text(u, call.from_user.username, promo_sentence=promo_s), profile_kb())
+    elif call.message:
+        await call.message.answer(
+            _profile_text(u, call.from_user.username, promo_sentence=promo_s),
+            parse_mode="HTML",
+            reply_markup=profile_kb(),
+        )
+
+
+@router.callback_query(F.data == "profile_referrals")
+async def profile_referrals(call: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    if not call.from_user:
+        await ack_callback(call)
+        return
+    msg = _callback_edit_target(call)
+    if not msg:
+        await ack_callback(call, text="Откройте меню: /start", show_alert=True)
+        return
+    await ack_callback(call)
+    tg = call.from_user.id
+    link = referral_deeplink(tg)
+    async with SessionLocal() as session:
+        u = await get_or_create_user(session, tg, call.from_user.username)
+        regs = await count_referrals_registered(session, u.id)
+        paid = await count_referrals_with_tariff_payment(session, u.id)
+        await session.commit()
+    text = (
+        "🤝 <b>Пригласите друга — оба экономят время</b>\n\n"
+        "Отправляйте ссылку ниже: если человек <b>впервые</b> нажмёт /start через неё, "
+        "будет учтено приглашение. После его оплаты тарифа вам может начисляться бонус на баланс "
+        "(процент настраивает администратор).\n\n"
+        "<b>Ваша персональная ссылка</b>\n"
+        f"{html_escape.escape(link)}\n\n"
+        "<b>По счёту приглашений в боте:</b>\n"
+        f"• перешло по вашей ссылке и сохранено в базе как приглашённые: <b>{regs}</b>\n"
+        f"• из них оплатили тариф хотя бы раз: <b>{paid}</b>\n\n"
+        "<i>Учитываются только люди с новым /start через ссылку, не уже существовавшие в боте.</i>"
+    )
+    await nav_edit(msg, text, profile_only_back_kb())
 
 
 @router.message(StateFilter(PromoStates.waiting_code), F.text)
@@ -784,7 +876,6 @@ async def callback_plan(call: CallbackQuery) -> None:
 
     parts = (call.data or "").split(":")
     plan_code = parts[1] if len(parts) > 1 else ""
-    payment_step_back = parts[2] if len(parts) > 2 and parts[2] in ("buy", "profile") else "buy"
     if not available_location_codes():
         await ack_callback(call)
         await nav_edit(
@@ -803,7 +894,6 @@ async def callback_plan(call: CallbackQuery) -> None:
     discounted = plan_amount
     promo_invoice_id: int | None = None
     promo_discount_minor = 0
-    promo_discount_html = ""
 
     async with SessionLocal() as session:
         db_user = await get_or_create_user(
@@ -814,14 +904,10 @@ async def callback_plan(call: CallbackQuery) -> None:
         if db_user.active_promo_id:
             pr = await get_promo_by_id(session, db_user.active_promo_id)
             if pr and pr.kind in ("percent", "fixed"):
-                chk = await validate_discount_promo_for_checkout(session, pr, db_user.id)
-                if not chk:
+                promo_err = await validate_discount_promo_for_checkout(session, pr, db_user.id)
+                if promo_err is None:
                     discounted, promo_discount_minor = promo_discount_on_amount(plan_amount, pr)
                     promo_invoice_id = pr.id
-                    promo_discount_html = (
-                        f'\n<i>Промокод <code>{html_escape.escape(pr.code)}</code>: '
-                        f"−{promo_discount_minor / 100:.2f} ₽ к цене тарифа.</i>"
-                    )
         apply_minor = min(int(db_user.balance_minor), discounted)
         await session.commit()
 
@@ -835,22 +921,6 @@ async def callback_plan(call: CallbackQuery) -> None:
     )
 
     await ack_callback(call)
-    pay_hint = ""
-    if apply_minor > 0:
-        pay_hint = (
-            f"\n\nС баланса будет учтено <code>{apply_minor / 100:.2f} ₽</code>, "
-            f"к оплате <code>{charge / 100:.2f} ₽</code>."
-        )
-    if charge == 0:
-        pay_hint = "\n\nТариф полностью оплачивается с баланса — отдельный счёт не нужен."
-
-    await nav_edit(
-        msg,
-        "💳 <b>Оплата подписки</b>\nДоступ ко <b>всем серверам</b> в одной ссылке."
-        f"{promo_discount_html}"
-        f"{pay_hint}",
-        plans_kb(back_to=payment_step_back, payment_step_back=payment_step_back),
-    )
 
     if charge == 0:
         async with SessionLocal() as session:
@@ -963,7 +1033,7 @@ async def callback_plan(call: CallbackQuery) -> None:
             inline_keyboard=[
                 [InlineKeyboardButton(text="💳 Оплатить (ЮKassa)", url=pay_url)],
                 [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"yk:{pay_id}")],
-                [InlineKeyboardButton(text="❌ Отменить оплату", callback_data="menu_home")],
+                [InlineKeyboardButton(text="❌ Отменить", callback_data="menu_home")],
             ]
         )
         extra = ""
