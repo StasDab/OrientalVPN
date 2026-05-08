@@ -1,19 +1,22 @@
-# Пример unit для запуска бота на VPS без Docker-образа приложения
-# (Postgres/Redis при этом могут быть в Docker на localhost:5432 / 6379).
+# systemd unit: Telegram-бот + Alembic перед стартом.
+# Сервис от системного пользователя myvpn (без root).
+# Postgres/Redis — например Docker на localhost:5432 / 6379.
 #
-# Установка:
-#   sudo useradd -r -m -s /bin/bash myvpn
-#   sudo mkdir -p /opt/myvpn && sudo chown myvpn:myvpn /opt/myvpn
-#   git clone <repo> /opt/myvpn
-#   cd /opt/myvpn && python3.12 -m venv /opt/myvpn/.venv
-#   /opt/myvpn/.venv/bin/pip install -r requirements.txt
+# Один раз на сервере:
+#   sudo useradd --system --user-group --create-home \
+#     --home-dir /var/lib/myvpn --shell /usr/sbin/nologin myvpn
+#   sudo git clone <repo> /opt/myvpn
+#   cd /opt/myvpn && sudo chown -R myvpn:myvpn /opt/myvpn
+#   sudo -u myvpn python3.12 -m venv /opt/myvpn/.venv
+#   sudo -u myvpn /opt/myvpn/.venv/bin/pip install -r /opt/myvpn/requirements.txt
+#   # секреты только root: sudo install -m 600 -o myvpn -g myvpn /dev/null /opt/myvpn/app/.env
+#   # затем sudo nano /opt/myvpn/app/.env или копирование с правами 600 и владельцем myvpn
+#   # скрипты с docker exec (fix_postgres_password.py) — только от root
 #   sudo cp infra/systemd/myvpn-bot.service.example /etc/systemd/system/myvpn-bot.service
-#   правки путей/User в unit при необходимости
 #   sudo systemctl daemon-reload && sudo systemctl enable --now myvpn-bot
 #
-# Файл /opt/myvpn/app/.env — секреты и DATABASE_URL.
-# WorkingDirectory — корень репозитория (рядом с alembic.ini), не каталог app/.
-# Если Postgres не в Docker — удалите docker.service из After= и Wants= ниже.
+# WorkingDirectory — корень репозитория (рядом с alembic.ini).
+# Если Postgres не в Docker — уберите docker.service из After= / Wants=.
 
 [Unit]
 Description=MyVpn Telegram bot (aiogram)
@@ -30,9 +33,8 @@ ExecStartPre=/opt/myvpn/.venv/bin/python -m alembic upgrade head
 ExecStart=/opt/myvpn/.venv/bin/python -m app.main
 Restart=on-failure
 RestartSec=15
-
-# Ограничения по желанию:
-# MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
