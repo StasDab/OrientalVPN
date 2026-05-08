@@ -82,6 +82,23 @@ MIN_TOPUP_RUB = 1
 MAX_TOPUP_RUB = 500_000
 
 
+def _effective_min_topup_rub() -> int:
+    """ЮKassa можно с 1 ₽; Telegram Payments режет малые суммы — см. TELEGRAM_MIN_INVOICE_RUB."""
+    if settings.use_yookassa:
+        return MIN_TOPUP_RUB
+    return max(MIN_TOPUP_RUB, int(settings.telegram_min_invoice_rub))
+
+
+def _user_text_for_invoice_bad_request(exc: TelegramBadRequest) -> str:
+    api = ((getattr(exc, "message", None) or str(exc))).upper()
+    if "CURRENCY_TOTAL_AMOUNT_INVALID" in api:
+        return (
+            f"Платёжная система не принимает слишком маленькую сумму. "
+            f"Укажите не менее {_effective_min_topup_rub()} ₽ или попробуйте другую сумму."
+        )
+    return "Не удалось открыть оплату. Попробуйте позже или выберите другую сумму."
+
+
 def _is_admin_user(tg_id: int | None) -> bool:
     return tg_id is not None and tg_id in settings.admin_id_set
 
@@ -518,10 +535,11 @@ async def profile_topup(call: CallbackQuery, state: FSMContext) -> None:
         return
     await state.set_state(TopupStates.waiting_amount)
     await ack_callback(call)
+    mn = _effective_min_topup_rub()
     await nav_edit(
         msg,
         f"💳 <b>Пополнение баланса</b>\n"
-        f"Отправьте число — сумма в <b>рублях</b> (от {MIN_TOPUP_RUB} до {MAX_TOPUP_RUB}).",
+        f"Отправьте число — сумма в <b>рублях</b> (от {mn} до {MAX_TOPUP_RUB}).",
         topup_cancel_kb(),
     )
 
@@ -629,6 +647,13 @@ async def _execute_topup_payment(message: Message, rub: int) -> None:
         )
         return
 
+    min_rub = _effective_min_topup_rub()
+    if rub < min_rub:
+        await message.answer(
+            f"Сумма должна быть от {min_rub} до {MAX_TOPUP_RUB} ₽. Введите другое число.",
+        )
+        return
+
     try:
         await message.bot.send_invoice(
             chat_id=message.chat.id,
@@ -642,12 +667,7 @@ async def _execute_topup_payment(message: Message, rub: int) -> None:
         )
     except TelegramBadRequest as e:
         log.exception("topup_send_invoice_failed", extra={"tg_id": message.from_user.id, "error": str(e)})
-        await message.answer(
-            "Не удалось открыть оплату в Telegram (проверьте <code>PROVIDER_TOKEN</code> "
-            "и что касса подключена к боту в BotFather). Текст от API: "
-            f"<code>{html_escape.escape(str(e))}</code>",
-            parse_mode="HTML",
-        )
+        await message.answer(_user_text_for_invoice_bad_request(e))
 
 
 def _looks_like_topup_prompt(msg: Message) -> bool:
@@ -673,8 +693,9 @@ async def topup_amount_entered(message: Message, state: FSMContext) -> None:
         await message.answer("Нужно целое число рублей, например: 500")
         return
     rub = int(raw)
-    if rub < MIN_TOPUP_RUB or rub > MAX_TOPUP_RUB:
-        await message.answer(f"Допустимо от {MIN_TOPUP_RUB} до {MAX_TOPUP_RUB} ₽.")
+    mn = _effective_min_topup_rub()
+    if rub < mn or rub > MAX_TOPUP_RUB:
+        await message.answer(f"Допустимо от {mn} до {MAX_TOPUP_RUB} ₽.")
         return
     await state.clear()
     await _execute_topup_payment(message, rub)
@@ -696,8 +717,9 @@ async def topup_amount_reply_fallback(message: Message, state: FSMContext) -> No
         return
     raw = (message.text or "").strip()
     rub = int(raw)
-    if rub < MIN_TOPUP_RUB or rub > MAX_TOPUP_RUB:
-        await message.answer(f"Допустимо от {MIN_TOPUP_RUB} до {MAX_TOPUP_RUB} ₽.")
+    mn = _effective_min_topup_rub()
+    if rub < mn or rub > MAX_TOPUP_RUB:
+        await message.answer(f"Допустимо от {mn} до {MAX_TOPUP_RUB} ₽.")
         return
     await state.clear()
     await _execute_topup_payment(message, rub)
@@ -1157,10 +1179,7 @@ async def callback_plan(call: CallbackQuery) -> None:
     except TelegramBadRequest as e:
         log.exception("plan_send_invoice_failed", extra={"tg_id": call.from_user.id, "error": str(e)})
         await call.message.answer(
-            "Не удалось показать счёт в Telegram. Проверьте "
-            "<code>PROVIDER_TOKEN</code> и подключение кассы к боту в BotFather. "
-            f"Подробнее: <code>{html_escape.escape(str(e))}</code>",
-            parse_mode="HTML",
+            _user_text_for_invoice_bad_request(e),
             disable_web_page_preview=True,
         )
 

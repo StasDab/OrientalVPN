@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     payments_provider_name: str = Field(default="telegram-payments", alias="PAYMENTS_PROVIDER_NAME")
     # telegram — Telegram Payments (PROVIDER_TOKEN); yookassa — ЮKassa API (секретный ключ + shopId).
     payment_provider: str = Field(default="telegram", alias="PAYMENT_PROVIDER")
+    # send_invoice через BotFather / провайдера Telegram: мелкий чек даёт Bad Request CURRENCY_TOTAL_AMOUNT_INVALID.
+    telegram_min_invoice_rub: int = Field(default=100, ge=1, le=999_999, alias="TELEGRAM_MIN_INVOICE_RUB")
     yookassa_shop_id: str = Field(default="", alias="YOOKASSA_SHOP_ID")
     yookassa_secret_key: str = Field(default="", alias="YOOKASSA_SECRET_KEY")
     # HTTPS URL возврата после оплаты (например https://t.me/YourBot или страница сайта).
