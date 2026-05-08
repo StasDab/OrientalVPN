@@ -27,6 +27,23 @@ def _client_fingerprint(request: web.Request) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _split_content_type_for_aiohttp(raw: str | None) -> tuple[str, str | None]:
+    """
+    aiohttp.web.Response не принимает charset внутри content_type (ValueError).
+    Разбираем заголовок upstream, например text/plain; charset=utf-8.
+    """
+    s = (raw or "").strip() or "text/plain; charset=utf-8"
+    parts = [p.strip() for p in s.split(";") if p.strip()]
+    if not parts:
+        return "text/plain", "utf-8"
+    mime = parts[0]
+    charset: str | None = None
+    for p in parts[1:]:
+        if p.lower().startswith("charset="):
+            charset = p.split("=", 1)[1].strip().strip("'\"")
+    return mime, charset
+
+
 async def handle_subscription_gate(request: web.Request) -> web.StreamResponse:
     try:
         return await _handle_subscription_gate_impl(request)
@@ -93,8 +110,13 @@ async def _handle_subscription_gate_impl(request: web.Request) -> web.StreamResp
         log.exception("subscription_gate_upstream_failed")
         raise web.HTTPBadGateway(text="Временно не удалось получить подписку.")
 
-    ct = resp.headers.get("content-type", "text/plain; charset=utf-8")
-    return web.Response(status=resp.status_code, body=resp.content, content_type=ct)
+    mime, charset = _split_content_type_for_aiohttp(resp.headers.get("content-type"))
+    return web.Response(
+        status=resp.status_code,
+        body=resp.content,
+        content_type=mime,
+        charset=charset,
+    )
 
 
 def create_gate_app() -> web.Application:

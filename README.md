@@ -146,7 +146,7 @@ curl -sS -D- -o /tmp/sub.txt "http://127.0.0.1:8095/sub/ВАШ-UUID" | head -20
 head -5 /tmp/sub.txt
 ```
 
-Ожидание: **200** и тело похоже на список прокси / base64-подписку. **404** «Подписка не найдена» — в БД нет строки с таким `sub_gate_token` или пустой `upstream_subscription_url` (нужна новая выдача подписки из бота после включения шлюза или проверка миграций). **500** — смотрите **сразу** логи: `journalctl -u myvpn-bot -n 100 --no-pager` (часто нет миграции, ошибка БД или недоступен upstream Marzban).
+Ожидание: **200** и тело похоже на список прокси / base64-подписку. **404** «Подписка не найдена» — в БД нет строки с таким `sub_gate_token` или пустой `upstream_subscription_url` (нужна новая выдача подписки из бота после включения шлюза или проверка миграций). **500** — смотрите логи: `journalctl -u myvpn-bot -n 100 --no-pager` (БД/upstream); если в логе было `charset must not be in content_type` — обновите бота с последнего `main` и перезапустите сервис.
 
 ### Шаг 4. Nginx: proxy_pass на шлюз
 
@@ -158,6 +158,8 @@ sudo sed -i 's/sub\.example\.com/sub.orientalvpn.ru/g' /etc/nginx/sites-availabl
 sudo ln -sf /etc/nginx/sites-available/sub.orientalvpn.ru /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
+
+Шаблон в репозитории — **только порт 80** (прокси на 8095). Не оставляйте `listen 443 ssl` без `ssl_certificate`: иначе `nginx -t` и `certbot --nginx` падают. Если такой конфиг уже создавали — **перезапишите** файл командами выше и снова `nginx -t`.
 
 В блоке `location /` должен быть **`proxy_pass http://127.0.0.1:8095;`** (без лишнего URI — чтобы запрос шёл как `/sub/...` на бэкенд).
 
@@ -174,11 +176,14 @@ curl -sS -o /dev/null -w "%{http_code}\n" -H "Host: sub.orientalvpn.ru" "http://
 На сервере с nginx и **открытыми** портами **80** и **443**:
 
 ```bash
-sudo apt update && sudo apt install -y certbot python3-certbot-nginx
+sudo apt update
+sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d sub.orientalvpn.ru
 ```
 
-Certbot поправит `server { listen 443 ssl; ... }` и пути к `fullchain.pem` / `privkey.pem`. После этого:
+Не склеивайте `apt install` и запуск `certbot` в одну команду: флаги `--nginx` пойдут в apt и дадут ошибку.
+
+Certbot сам добавит блок **`listen 443 ssl`** и пути к `fullchain.pem` / `privkey.pem`. После этого:
 
 ```bash
 curl -sS -o /dev/null -w "%{http_code}\n" "https://sub.orientalvpn.ru/sub/ВАШ-UUID"
