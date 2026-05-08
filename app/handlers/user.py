@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from aiogram import Bot, F, Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.enums import ContentType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, StateFilter
@@ -509,8 +510,8 @@ async def profile_topup(call: CallbackQuery, state: FSMContext) -> None:
     if not msg:
         await ack_callback(call, text="Откройте меню: /start", show_alert=True)
         return
-    await ack_callback(call)
     await state.set_state(TopupStates.waiting_amount)
+    await ack_callback(call)
     await nav_edit(
         msg,
         f"💳 <b>Пополнение баланса</b>\n"
@@ -622,16 +623,25 @@ async def _execute_topup_payment(message: Message, rub: int) -> None:
         )
         return
 
-    await message.bot.send_invoice(
-        chat_id=message.chat.id,
-        title=f"Баланс OrientalVPN · {rub} ₽",
-        description="Пополнение внутреннего баланса для оплаты подписки",
-        payload=payload,
-        provider_token=settings.provider_token,
-        currency="RUB",
-        prices=[LabeledPrice(label=f"Пополнение {rub} ₽", amount=minor)],
-        reply_markup=payment_cancel_to_main_kb(),
-    )
+    try:
+        await message.bot.send_invoice(
+            chat_id=message.chat.id,
+            title=f"Баланс OrientalVPN · {rub} ₽",
+            description="Пополнение внутреннего баланса для оплаты подписки",
+            payload=payload,
+            provider_token=settings.provider_token,
+            currency="RUB",
+            prices=[LabeledPrice(label=f"Пополнение {rub} ₽", amount=minor)],
+            reply_markup=payment_cancel_to_main_kb(),
+        )
+    except TelegramBadRequest as e:
+        log.exception("topup_send_invoice_failed", extra={"tg_id": message.from_user.id, "error": str(e)})
+        await message.answer(
+            "Не удалось открыть оплату в Telegram (проверьте <code>PROVIDER_TOKEN</code> "
+            "и что касса подключена к боту в BotFather). Текст от API: "
+            f"<code>{html_escape.escape(str(e))}</code>",
+            parse_mode="HTML",
+        )
 
 
 def _looks_like_topup_prompt(msg: Message) -> bool:
@@ -639,11 +649,18 @@ def _looks_like_topup_prompt(msg: Message) -> bool:
     return isinstance(t, str) and "Пополнение баланса" in t
 
 
-@router.message(TopupStates.waiting_amount, F.text)
+@router.message(TopupStates.waiting_amount)
 async def topup_amount_entered(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
+    if getattr(message, "successful_payment", None) is not None:
+        raise SkipHandler()
+    if message.content_type != ContentType.TEXT:
+        await message.answer("Пришлите сумму текстом одним числом в рублях (например: 1500).")
+        return
     raw = (message.text or "").strip()
+    if not raw:
+        return
     if raw.startswith("/"):
         return
     if not raw.isdigit():
@@ -1117,19 +1134,29 @@ async def callback_plan(call: CallbackQuery) -> None:
     if promo_discount_minor > 0:
         desc += f" (промо −{promo_discount_minor / 100:.2f} ₽)"
     prices = [LabeledPrice(label=plan["title"], amount=charge)]
-    await call.bot.send_invoice(
-        chat_id=msg.chat.id,
-        title=plan["title"],
-        description=desc,
-        payload=payload,
-        provider_token=settings.provider_token,
-        currency="RUB",
-        prices=prices,
-        reply_markup=payment_cancel_to_main_kb(),
-        need_email=False,
-        need_name=False,
-        need_phone_number=False,
-    )
+    try:
+        await call.bot.send_invoice(
+            chat_id=msg.chat.id,
+            title=plan["title"],
+            description=desc,
+            payload=payload,
+            provider_token=settings.provider_token,
+            currency="RUB",
+            prices=prices,
+            reply_markup=payment_cancel_to_main_kb(),
+            need_email=False,
+            need_name=False,
+            need_phone_number=False,
+        )
+    except TelegramBadRequest as e:
+        log.exception("plan_send_invoice_failed", extra={"tg_id": call.from_user.id, "error": str(e)})
+        await call.message.answer(
+            "Не удалось показать счёт в Telegram. Проверьте "
+            "<code>PROVIDER_TOKEN</code> и подключение кассы к боту в BotFather. "
+            f"Подробнее: <code>{html_escape.escape(str(e))}</code>",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
 
 
 async def _run_trial(message: Message, tg_user) -> None:

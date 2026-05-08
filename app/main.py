@@ -10,6 +10,16 @@ from app.scheduler import background_jobs
 from app.subscription_gate_http import start_subscription_gate_server, stop_subscription_gate_server
 
 
+# Явно запрашиваем типы апдейтов: иначе при неверном авто-определении клиент «молчит»
+# (не приходят callback_query / message с оплатой).
+POLLING_ALLOWED_UPDATES = [
+    "message",
+    "edited_message",
+    "callback_query",
+    "pre_checkout_query",
+]
+
+
 async def main() -> None:
     setup_logging()
     await start_subscription_gate_server()
@@ -23,7 +33,7 @@ async def main() -> None:
 
     asyncio.create_task(background_jobs(bot))
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, allowed_updates=POLLING_ALLOWED_UPDATES)
     finally:
         await storage.close()
         await stop_subscription_gate_server()
