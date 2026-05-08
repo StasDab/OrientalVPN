@@ -1,18 +1,27 @@
-# Шлюз подписок: прокси на бот (127.0.0.1:8095).
-# ЭТА ВЕРСИЯ — только порт 80 (без SSL), чтобы nginx -t и certbot не ломались.
+# Шлюз подписок → прокси на бот http://127.0.0.1:8095 (SUBSCRIPTION_GATE_LISTEN_PORT).
 #
+# Если на этом же VPS порт 443 занят Xray (REALITY), nginx НЕ МОЖЕТ слушать 443.
+# Тогда HTTPS подписки выносим на отдельный порт (ниже — 9443). В .env бота:
+#   SUBSCRIPTION_GATE_PUBLIC_BASE=https://sub.example.com:9443
+#
+# Установка (замените домен при необходимости):
 #   sudo cp infra/nginx-subscription-gate.conf.example /etc/nginx/sites-available/sub.orientalvpn.ru
 #   sudo sed -i 's/sub\.example\.com/sub.orientalvpn.ru/g' /etc/nginx/sites-available/sub.orientalvpn.ru
 #   sudo ln -sf /etc/nginx/sites-available/sub.orientalvpn.ru /etc/nginx/sites-enabled/
+#
+# Сертификат Let's Encrypt (порт 80 должен отдавать .well-known):
+#   sudo certbot certonly --webroot -w /var/www/html -d sub.orientalvpn.ru
+#   (если сертификат уже есть — шаг пропустите)
+#
+# Пути к ключам — как выдал certbot (часто /etc/letsencrypt/live/<домен>/).
+#
 #   sudo nginx -t && sudo systemctl reload nginx
-#   sudo apt install -y certbot python3-certbot-nginx
-#   sudo certbot --nginx -d sub.orientalvpn.ru
+#   sudo ufw allow 9443/tcp
 #
-# Certbot сам добавит listen 443 ssl и ssl_certificate. После этого HTTP можно редиректить на HTTPS.
-#
-# НЕ копируйте старый вариант с «пустым» server { listen 443 ssl } — будет ошибка:
-#   no ssl_certificate is defined for the listen ... ssl directive
+# Проверка:
+#   curl -sS -o /dev/null -w "%{http_code}\n" "https://sub.example.com:9443/sub/<uuid>"
 
+# --- HTTP: ACME + опционально прокси без TLS (Happ лучше с https:9443) ---
 server {
     listen 80;
     listen [::]:80;
@@ -21,6 +30,29 @@ server {
     location ^/.well-known/acme-challenge/ {
         root /var/www/html;
     }
+
+    location / {
+        proxy_pass http://127.0.0.1:8095;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 15s;
+        proxy_read_timeout 60s;
+    }
+}
+
+# --- HTTPS подписки на НЕ-443 порту (когда 443 занят Xray) ---
+server {
+    listen 9443 ssl http2;
+    listen [::]:9443 ssl http2;
+    server_name sub.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/sub.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/sub.example.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     location / {
         proxy_pass http://127.0.0.1:8095;

@@ -150,50 +150,45 @@ head -5 /tmp/sub.txt
 
 ### Шаг 4. Nginx: proxy_pass на шлюз
 
-Установите конфиг (адаптируйте имя файла под себя):
+**Если на VPS порт 443 занят Xray (REALITY)** (`ss -tlnp | grep 443` показывает `xray`): nginx **не сможет** слушать 443. Используйте пример **`infra/nginx-subscription-gate.conf.example`** — там HTTPS на **9443** и тот же прокси на 8095. В `.env` бота:
+
+```env
+SUBSCRIPTION_GATE_PUBLIC_BASE=https://sub.orientalvpn.ru:9443
+```
+
+Откройте порт в фаерволе: `sudo ufw allow 9443/tcp`. После смены BASE пользователям нужны **новые** ссылки из бота (или замена URL в БД).
+
+Установка:
 
 ```bash
 sudo cp /opt/myvpn/infra/nginx-subscription-gate.conf.example /etc/nginx/sites-available/sub.orientalvpn.ru
 sudo sed -i 's/sub\.example\.com/sub.orientalvpn.ru/g' /etc/nginx/sites-available/sub.orientalvpn.ru
 sudo ln -sf /etc/nginx/sites-available/sub.orientalvpn.ru /etc/nginx/sites-enabled/
+```
+
+Сертификат (если ещё нет), через webroot на порту 80:
+
+```bash
+sudo certbot certonly --webroot -w /var/www/html -d sub.orientalvpn.ru
+```
+
+Если файлов `/etc/letsencrypt/options-ssl-nginx.conf` или `ssl-dhparams.pem` нет — установите пакет `python3-certbot-nginx` или временно закомментируйте строки `include ...` и `ssl_dhparam` в конфиге и добавьте минимальные ssl-директивы вручную.
+
+Проверка и перезагрузка:
+
+```bash
 sudo nginx -t && sudo systemctl reload nginx
+curl -sS -o /dev/null -w "%{http_code}\n" "https://sub.orientalvpn.ru:9443/sub/ВАШ-UUID"
 ```
 
-Шаблон в репозитории — **только порт 80** (прокси на 8095). Не оставляйте `listen 443 ssl` без `ssl_certificate`: иначе `nginx -t` и `certbot --nginx` падают. Если такой конфиг уже создавали — **перезапишите** файл командами выше и снова `nginx -t`.
+**Если 443 свободен для nginx** — можно оставить только блок `:80` из примера и после `certbot --nginx -d sub...` использовать классический `https://sub.../sub/...` **без порта** (старый сценарий в отдельном сервере без Xray на 443).
 
-В блоке `location /` должен быть **`proxy_pass http://127.0.0.1:8095;`** (без лишнего URI — чтобы запрос шёл как `/sub/...` на бэкенд).
+В блоке `location /` должен быть **`proxy_pass http://127.0.0.1:8095;`**.
 
-Проверка **через nginx по HTTP** (до сертификата):
+### Шаг 5. Happ / телефон
 
-```bash
-curl -sS -o /dev/null -w "%{http_code}\n" -H "Host: sub.orientalvpn.ru" "http://127.0.0.1/sub/ВАШ-UUID"
-```
-
-(Если nginx слушает только на интерфейсе сервера, используйте `curl http://IP_СЕРВЕРА/... -H "Host: sub.orientalvpn.ru"`.)
-
-### Шаг 5. Валидный TLS (Let's Encrypt)
-
-На сервере с nginx и **открытыми** портами **80** и **443**:
-
-```bash
-sudo apt update
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d sub.orientalvpn.ru
-```
-
-Не склеивайте `apt install` и запуск `certbot` в одну команду: флаги `--nginx` пойдут в apt и дадут ошибку.
-
-Certbot сам добавит блок **`listen 443 ssl`** и пути к `fullchain.pem` / `privkey.pem`. После этого:
-
-```bash
-curl -sS -o /dev/null -w "%{http_code}\n" "https://sub.orientalvpn.ru/sub/ВАШ-UUID"
-```
-
-В браузере по HTTPS не должно быть «незащищённо» для этого имени.
-
-### Шаг 6. Happ / телефон
-
-Вставьте **полную** ссылку `https://sub.orientalvpn.ru/sub/<uuid>` из бота («Мои подписки»). После шагов выше сертификат и путь должны совпадать с тем, что отдаёт ваш nginx и шлюз.
+Вставьте полную ссылку из бота — с **портом**, если выбрали вариант с 9443, например  
+`https://sub.orientalvpn.ru:9443/sub/<uuid>`.
 
 ## Деплой на VPS (кратко)
 
