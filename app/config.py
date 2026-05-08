@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     subscription_gate_listen_port: int = Field(default=8095, ge=1, le=65535, alias="SUBSCRIPTION_GATE_LISTEN_PORT")
     # Подменить только хост у /sub/... (отдельный домен подписки; nginx → Marzban).
     subscription_url_prefix: str = Field(default="", alias="SUBSCRIPTION_URL_PREFIX")
+    # Необязательный баннер на /start (URL картинки/фото).
+    start_banner_url: str = Field(default="", alias="START_BANNER_URL")
 
     @property
     def admin_id_set(self) -> set[int]:

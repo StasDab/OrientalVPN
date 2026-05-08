@@ -26,6 +26,7 @@ from app.keyboards.main import (
     plans_kb,
     profile_kb,
     subscriptions_back_kb,
+    topup_cancel_kb,
 )
 from app.payment_fulfillment import fulfill_paid_payment_row
 from app.plans import LOCATION_TITLES, PLAN_MAP, format_topup_payload
@@ -135,7 +136,8 @@ def _profile_text(db_user: User, display_username: str | None) -> str:
         f"Telegram ID: <code>{db_user.tg_id}</code>\n"
         f"Username: {uname}\n\n"
         f"💰 <b>Баланс:</b> <code>{bal:.2f} ₽</code>\n\n"
-        "<b>Пополнить баланс</b> — укажите сумму сами; эти деньги уменьшат счёт при покупке подписки в «Купить»."
+        "При пополнении баланса вы указываете желаемую сумму, "
+        "которая затем будет использована в счете оплаты подписки."
     )
 
 
@@ -148,22 +150,19 @@ async def _fetch_marzban_status_line(api_url: str, external_user_id: str) -> str
         )
         ex = await provider.get_user_expire_unix(external_user_id)
         if ex is None:
-            return "Marzban: пользователь не найден в панели."
+            return "Осталось — нет данных (пользователь не найден в панели)."
         if ex == 0:
-            return "Marzban: без ограничения срока (expire=0)."
+            return "Осталось — без ограничения срока."
         dt = naive_utc_from_timestamp(ex)
         now = utc_now_naive()
         if dt <= now:
-            return "Marzban: по данным панели срок доступа истёк."
+            return "Осталось — срок истёк."
         left = dt - now
         d, h = left.days, left.seconds // 3600
-        return (
-            f"Marzban: осталось ~<b>{d}</b> дн. <b>{h}</b> ч. "
-            f"(до {dt.strftime('%Y-%m-%d %H:%M')} UTC)"
-        )
+        return f"Осталось — <b>{d}</b> дн. <b>{h}</b> ч."
     except Exception:
         log.warning("marzban_status_fetch_failed", exc_info=True)
-        return "Marzban: не удалось получить срок (сеть или API панели)."
+        return "Осталось — временно недоступно."
 
 
 async def _build_subscription_lines(subs: list[Subscription]) -> list[str]:
@@ -176,7 +175,6 @@ async def _build_subscription_lines(subs: list[Subscription]) -> list[str]:
         loc = LOCATION_TITLES.get(s.location_code, s.location_code.upper())
         lines.append(
             f"<b>{html_escape.escape(loc)}</b>\n"
-            f"<i>Бот (БД):</i> до {s.ends_at.strftime('%Y-%m-%d %H:%M')} UTC\n"
             f"<i>{cache[key]}</i>\n"
             f"{subscription_url_pre_only(s.subscription_url)}"
         )
@@ -185,12 +183,25 @@ async def _build_subscription_lines(subs: list[Subscription]) -> list[str]:
 
 @router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
-    await message.answer(
-        "👋 <b>OrientalVPN</b>\n"
-        "Покупка подписки, пробный период и ссылки доступа.",
-        reply_markup=main_menu_kb(),
-        parse_mode="HTML",
+    text = (
+        "👋 <b>Добро пожаловать в OrientalVPN!</b>\n\n"
+        "✨ Твой личный ключ к безграничному интернету:\n\n"
+        "💎 <b>Высокоскоростной и Надежный VPN:</b>\n"
+        "• ⚡️Мгновенная загрузка 4K-видео и стабильный стриминг.\n"
+        "• 🛡 Обход Глушилок (DPI): Используем технологию Stealth для надежного доступа в любых условиях.\n"
+        "• 🌍 Открытие всех заблокированных ресурсов: Instagram, TikTok, Netflix, Discord.\n"
+        "• 🔒 Полная анонимность и защита трафика."
     )
+    banner = (settings.start_banner_url or "").strip()
+    if banner:
+        await message.answer_photo(
+            photo=banner,
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(),
+        )
+        return
+    await message.answer(text, reply_markup=main_menu_kb(), parse_mode="HTML")
 
 
 @router.message(Command("help"))
@@ -301,7 +312,7 @@ async def profile_balance(call: CallbackQuery) -> None:
     await nav_edit(
         msg,
         f"💰 <b>Мой баланс</b>\nСейчас: <code>{bal:.2f} ₽</code>\n\n"
-        "Средства спишутся при оплате подписки в «Купить» (или целиком, если баланса хватает на тариф).",
+        "Средства спишутся при оплате подписки (или целиком, если баланса хватает на тариф).",
         subscriptions_back_kb(),
     )
 
@@ -315,16 +326,27 @@ async def profile_topup(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(TopupStates.waiting_amount)
     await call.message.answer(
         f"💳 <b>Пополнение баланса</b>\n"
-        f"Отправьте число — сумма в <b>рублях</b> (от {MIN_TOPUP_RUB} до {MAX_TOPUP_RUB}).\n"
-        "Отмена: /cancel",
+        f"Отправьте число — сумма в <b>рублях</b> (от {MIN_TOPUP_RUB} до {MAX_TOPUP_RUB}).",
         parse_mode="HTML",
+        reply_markup=topup_cancel_kb(),
     )
+
+
+@router.callback_query(StateFilter(TopupStates.waiting_amount), F.data == "topup_cancel")
+async def topup_cancel_cb(call: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    msg = _callback_edit_target(call)
+    if not msg:
+        await ack_callback(call, text="Пополнение отменено.")
+        return
+    await ack_callback(call)
+    await nav_edit(msg, "🏠 <b>Главное меню</b>\nВыберите раздел:", main_menu_kb())
 
 
 @router.message(Command("cancel"), StateFilter(TopupStates.waiting_amount))
 async def topup_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Пополнение отменено.")
+    await message.answer("Пополнение отменено.", reply_markup=main_menu_kb())
 
 
 @router.message(TopupStates.waiting_amount, F.text)

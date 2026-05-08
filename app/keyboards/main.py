@@ -60,3 +60,11 @@ def subscriptions_back_kb() -> InlineKeyboardMarkup:
         ]
     )
 
+
+def topup_cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отменить", callback_data="topup_cancel")],
+        ]
+    )
+
