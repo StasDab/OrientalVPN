@@ -26,6 +26,12 @@
 4. `alembic upgrade head`
 5. `python -m app.main`
 
+### Баннер на /start
+
+- Через URL: задайте `START_BANNER_URL=https://.../banner.png`.
+- Через локальный файл: задайте `START_BANNER_PATH=/opt/myvpn/assets/start-banner.png`.
+- В репозитории есть готовый файл: `assets/start-banner.png`.
+
 ## Миграции
 
 Всегда из **корня** репозитория (рядом с `alembic.ini`):

@@ -1,13 +1,21 @@
 import html as html_escape
 import logging
 import re
+from pathlib import Path
 from uuid import uuid4
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LabeledPrice,
+    Message,
+)
 
 from app.config import settings
 from app.datetime_util import naive_utc_from_timestamp, utc_now_naive
@@ -53,6 +61,10 @@ router = Router()
 _TELEGRAM_TEXT_MAX = 4096
 MIN_TOPUP_RUB = 1
 MAX_TOPUP_RUB = 500_000
+
+
+def _is_admin_user(tg_id: int | None) -> bool:
+    return tg_id is not None and tg_id in settings.admin_id_set
 
 
 def _callback_edit_target(call: CallbackQuery) -> Message | None:
@@ -193,15 +205,29 @@ async def cmd_start(message: Message) -> None:
         "• 🔒 Полная анонимность и защита трафика."
     )
     banner = (settings.start_banner_url or "").strip()
+    banner_path = (settings.start_banner_path or "").strip()
+    kb = main_menu_kb(is_admin=_is_admin_user(message.from_user.id if message.from_user else None))
+    if banner_path:
+        p = Path(banner_path)
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        if p.is_file():
+            await message.answer_photo(
+                photo=FSInputFile(str(p)),
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            return
     if banner:
         await message.answer_photo(
             photo=banner,
             caption=text,
             parse_mode="HTML",
-            reply_markup=main_menu_kb(),
+            reply_markup=kb,
         )
         return
-    await message.answer(text, reply_markup=main_menu_kb(), parse_mode="HTML")
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.message(Command("help"))
@@ -216,7 +242,12 @@ async def callback_help(call: CallbackQuery) -> None:
         await ack_callback(call, text="Откройте меню: /start", show_alert=True)
         return
     await ack_callback(call)
-    await nav_edit(msg, HELP_TEXT, main_menu_kb(), parse_mode=None)
+    await nav_edit(
+        msg,
+        HELP_TEXT,
+        main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
+        parse_mode=None,
+    )
 
 
 @router.message(Command("buy"))
@@ -253,7 +284,7 @@ async def callback_menu_home(call: CallbackQuery, state: FSMContext) -> None:
     await nav_edit(
         msg,
         "🏠 <b>Главное меню</b>\nВыберите раздел:",
-        main_menu_kb(),
+        main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
     )
 
 
@@ -340,13 +371,20 @@ async def topup_cancel_cb(call: CallbackQuery, state: FSMContext) -> None:
         await ack_callback(call, text="Пополнение отменено.")
         return
     await ack_callback(call)
-    await nav_edit(msg, "🏠 <b>Главное меню</b>\nВыберите раздел:", main_menu_kb())
+    await nav_edit(
+        msg,
+        "🏠 <b>Главное меню</b>\nВыберите раздел:",
+        main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
+    )
 
 
 @router.message(Command("cancel"), StateFilter(TopupStates.waiting_amount))
 async def topup_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Пополнение отменено.", reply_markup=main_menu_kb())
+    await message.answer(
+        "Пополнение отменено.",
+        reply_markup=main_menu_kb(is_admin=_is_admin_user(message.from_user.id if message.from_user else None)),
+    )
 
 
 @router.message(TopupStates.waiting_amount, F.text)
@@ -516,7 +554,12 @@ async def callback_plan(call: CallbackQuery) -> None:
     payment_step_back = parts[2] if len(parts) > 2 and parts[2] in ("buy", "profile") else "buy"
     if not available_location_codes():
         await ack_callback(call)
-        await nav_edit(msg, NO_VPN_NODES_TEXT, main_menu_kb(), parse_mode=None)
+        await nav_edit(
+            msg,
+            NO_VPN_NODES_TEXT,
+            main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
+            parse_mode=None,
+        )
         return
     plan = PLAN_MAP.get(plan_code)
     if not plan:
@@ -776,7 +819,7 @@ async def _run_trial(message: Message, tg_user) -> None:
         "Инструкция: клиент → вставить ссылку → обновить профиль.",
         parse_mode="HTML",
         disable_web_page_preview=True,
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_kb(is_admin=_is_admin_user(tg_user.id if tg_user else None)),
     )
 
 
@@ -796,7 +839,11 @@ async def callback_trial(call: CallbackQuery) -> None:
             return
 
     await ack_callback(call)
-    await nav_edit(msg, "⏳ Выдаём пробный доступ…", main_menu_kb())
+    await nav_edit(
+        msg,
+        "⏳ Выдаём пробный доступ…",
+        main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
+    )
     await _run_trial(msg, call.from_user)
 
 
@@ -838,7 +885,7 @@ async def callback_my(call: CallbackQuery) -> None:
             await nav_edit(
                 msg,
                 "Подписок пока нет. Используйте «Купить» или пробный период.",
-                main_menu_kb(),
+                main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
                 parse_mode=None,
             )
             return
@@ -847,14 +894,14 @@ async def callback_my(call: CallbackQuery) -> None:
         await nav_edit(
             msg,
             subscriptions_list_intro_html() + "\n\n<i>Активных подписок нет.</i>",
-            main_menu_kb(),
+            main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
         )
         return
     lines = await _build_subscription_lines(subs)
     await nav_edit(
         msg,
         subscriptions_list_intro_html() + "\n\n" + "\n\n".join(lines),
-        main_menu_kb(),
+        main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
     )
 
 

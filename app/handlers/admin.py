@@ -15,6 +15,7 @@ from app.db.repositories import (
     revoke_user_subscriptions,
 )
 from app.db.session import SessionLocal
+from app.keyboards.main import admin_panel_kb
 from app.services.node_registry import load_nodes
 from app.services.vpn_provider import MarzbanAdapter
 from app.states import BroadcastStates
@@ -28,22 +29,101 @@ def is_admin(tg_id: int | None) -> bool:
     return tg_id in settings.admin_id_set
 
 
-@router.message(Command("stats"))
-async def cmd_stats(message: Message) -> None:
-    if not is_admin(message.from_user.id):
-        await message.answer("Команда доступна только администраторам.")
-        return
+async def _stats_text() -> str:
     async with SessionLocal() as session:
         snap = await admin_stats_snapshot(session)
     vol_rub = snap["payments_30d_volume_minor"] / 100
-    text = (
+    return (
         "Статистика:\n"
         f"• Активных подписок: {snap['active_subscriptions']}\n"
         f"• Оплат за 30 дней: {snap['payments_30d_count']}\n"
         f"• Сумма оплат за 30 дней: {vol_rub:.2f} RUB\n"
         f"• Ожидают выдачи (pending_provision): {snap['pending_provision_payments']}"
     )
-    await message.answer(text)
+
+
+async def _servers_text() -> str:
+    nodes = load_nodes()
+    if not nodes:
+        return "Ноды не заданы (VPN_NODES_JSON пуст)."
+    lines = []
+    for n in nodes:
+        h = "ok" if n.is_healthy else "degraded"
+        load = f"{n.current_load}/{n.capacity}"
+        lines.append(f"• [{n.location_code}] {n.api_url} — {h}, нагрузка {load}")
+    return "Серверы:\n" + "\n".join(lines)
+
+
+@router.message(Command("admin"))
+async def cmd_admin_panel(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("Команда доступна только администраторам.")
+        return
+    await message.answer("🛠️ Панель администратора", reply_markup=admin_panel_kb())
+
+
+@router.callback_query(F.data == "admin_panel")
+async def callback_admin_panel(call: CallbackQuery) -> None:
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await call.answer()
+    await call.message.answer("🛠️ Панель администратора", reply_markup=admin_panel_kb())
+
+
+@router.callback_query(F.data == "admin_stats")
+async def callback_admin_stats(call: CallbackQuery) -> None:
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await call.answer()
+    await call.message.answer(await _stats_text())
+
+
+@router.callback_query(F.data == "admin_servers")
+async def callback_admin_servers(call: CallbackQuery) -> None:
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await call.answer()
+    await call.message.answer(await _servers_text())
+
+
+@router.callback_query(F.data == "admin_broadcast")
+async def callback_admin_broadcast(call: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(BroadcastStates.entering_text)
+    await call.message.answer(
+        "Рассылка: отправьте текст следующим сообщением.\n"
+        "Подтверждение будет запрошено кнопками. /cancel — отмена.",
+    )
+
+
+@router.callback_query(F.data == "admin_promos")
+async def callback_admin_promos(call: CallbackQuery) -> None:
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await call.answer("Раздел промокодов будет добавлен следующим этапом.", show_alert=True)
+
+
+@router.callback_query(F.data == "admin_referrals")
+async def callback_admin_referrals(call: CallbackQuery) -> None:
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await call.answer("Раздел рефералов будет добавлен следующим этапом.", show_alert=True)
+
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("Команда доступна только администраторам.")
+        return
+    await message.answer(await _stats_text())
 
 
 @router.message(Command("servers"))
@@ -51,16 +131,7 @@ async def cmd_servers(message: Message) -> None:
     if not is_admin(message.from_user.id):
         await message.answer("Команда доступна только администраторам.")
         return
-    nodes = load_nodes()
-    if not nodes:
-        await message.answer("Ноды не заданы (VPN_NODES_JSON пуст).")
-        return
-    lines = []
-    for n in nodes:
-        h = "ok" if n.is_healthy else "degraded"
-        load = f"{n.current_load}/{n.capacity}"
-        lines.append(f"• [{n.location_code}] {n.api_url} — {h}, нагрузка {load}")
-    await message.answer("Серверы:\n" + "\n".join(lines))
+    await message.answer(await _servers_text())
 
 
 @router.message(Command("add_days"))

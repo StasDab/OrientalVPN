@@ -3,16 +3,17 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.plans import PLAN_MAP
 
 
-def main_menu_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
-            [InlineKeyboardButton(text="💳 Купить", callback_data="buy")],
-            [InlineKeyboardButton(text="Пробный доступ", callback_data="trial")],
-            [InlineKeyboardButton(text="📁 Мои подписки", callback_data="my")],
-            [InlineKeyboardButton(text="Помощь", callback_data="help")],
-        ]
-    )
+def main_menu_kb(*, is_admin: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
+        [InlineKeyboardButton(text="💳 Купить", callback_data="buy")],
+        [InlineKeyboardButton(text="Пробный доступ", callback_data="trial")],
+        [InlineKeyboardButton(text="📁 Мои подписки", callback_data="my")],
+        [InlineKeyboardButton(text="Помощь", callback_data="help")],
+    ]
+    if is_admin:
+        rows.insert(1, [InlineKeyboardButton(text="🛠️ Админ-панель", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def profile_kb() -> InlineKeyboardMarkup:
@@ -65,6 +66,19 @@ def topup_cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="❌ Отменить", callback_data="topup_cancel")],
+        ]
+    )
+
+
+def admin_panel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="🖥 Серверы", callback_data="admin_servers")],
+            [InlineKeyboardButton(text="🎟 Промокоды", callback_data="admin_promos")],
+            [InlineKeyboardButton(text="🤝 Рефералы", callback_data="admin_referrals")],
+            [InlineKeyboardButton(text="📣 Рассылка", callback_data="admin_broadcast")],
+            [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_home")],
         ]
     )
 

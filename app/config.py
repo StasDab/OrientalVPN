@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     subscription_url_prefix: str = Field(default="", alias="SUBSCRIPTION_URL_PREFIX")
     # Необязательный баннер на /start (URL картинки/фото).
     start_banner_url: str = Field(default="", alias="START_BANNER_URL")
+    # Необязательный локальный путь к баннеру на /start (абсолютный или относительно /opt/myvpn).
+    start_banner_path: str = Field(default="", alias="START_BANNER_PATH")
 
     @property
     def admin_id_set(self) -> set[int]:
