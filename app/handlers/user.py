@@ -225,8 +225,14 @@ async def send_welcome_banner_new_message(bot: Bot, chat_id: int, *, tg_uid: int
 
 
 def payment_cancel_to_main_kb() -> InlineKeyboardMarkup:
+    """
+    Клавиатура к сообщению-инвойсу Telegram Payments.
+    Нельзя передавать только «Отменить»: API вернёт REPLY_MARKUP_BUY_EMPTY —
+    нужна кнопка оплаты (pay=True), либо не передавать reply_markup вообще.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="Оплатить", pay=True)],
             [InlineKeyboardButton(text="❌ Отменить", callback_data="menu_home")],
         ]
     )
