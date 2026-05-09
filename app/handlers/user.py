@@ -153,11 +153,18 @@ async def ack_callback(
         pass
 
 
-NO_VPN_NODES_TEXT = (
-    "VPN-ноды не настроены: в .env на сервере задайте VPN_NODES_JSON "
-    "(список локаций и api_url панели Marzban). Пример в .env.example. "
-    "После правки перезапустите сервис бота."
+# Что показываем пользователю, если нельзя выдать доступ (нет нод / некуда провижионить).
+# Детали (.env, VPN_NODES_JSON и т.д.) — только в логах сервера и в админ-разделах.
+USER_ACCESS_UNAVAILABLE_SHORT = (
+    "Сервис временно недоступен. Попробуйте позже или напишите в поддержку."
 )
+
+
+def _log_vpn_nodes_unavailable(reason: str) -> None:
+    log.warning(
+        "vpn_nodes_unavailable: user blocked (%s); check VPN_NODES_JSON / vpn_nodes.json / VPN_NODES_JSON_FILE",
+        reason,
+    )
 
 START_WELCOME_HTML = (
     "👋 <b>Добро пожаловать в OrientalVPN!</b>\n\n"
@@ -851,11 +858,13 @@ async def promo_code_enter(message: Message, state: FSMContext) -> None:
                 await message.answer("У промокода задан некорректный срок. Обратитесь в поддержку.")
                 return
             if not available_location_codes():
-                await message.answer(NO_VPN_NODES_TEXT)
+                _log_vpn_nodes_unavailable("promo_free_days_no_locations")
+                await message.answer(USER_ACCESS_UNAVAILABLE_SHORT)
                 return
             chosen = pick_primary_node()
             if not chosen:
-                await message.answer("Нет доступных серверов в конфигурации.")
+                _log_vpn_nodes_unavailable("promo_free_days_no_primary_node")
+                await message.answer(USER_ACCESS_UNAVAILABLE_SHORT)
                 return
             loc_code = chosen.location_code
             provider = MarzbanAdapter(
@@ -989,9 +998,10 @@ async def callback_plan(call: CallbackQuery) -> None:
     plan_code = parts[1] if len(parts) > 1 else ""
     if not available_location_codes():
         await ack_callback(call)
+        _log_vpn_nodes_unavailable("plan_select_no_locations")
         await nav_edit(
             msg,
-            NO_VPN_NODES_TEXT,
+            USER_ACCESS_UNAVAILABLE_SHORT,
             main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
             parse_mode=None,
         )
@@ -1207,12 +1217,14 @@ async def _run_trial(message: Message, tg_user) -> None:
             return
 
     if not available_location_codes():
-        await message.answer(NO_VPN_NODES_TEXT)
+        _log_vpn_nodes_unavailable("trial_no_locations")
+        await message.answer(USER_ACCESS_UNAVAILABLE_SHORT)
         return
 
     selected_node = pick_primary_node()
     if not selected_node:
-        await message.answer("Нет доступных серверов в конфигурации.")
+        _log_vpn_nodes_unavailable("trial_no_primary_node")
+        await message.answer(USER_ACCESS_UNAVAILABLE_SHORT)
         return
 
     location_code = selected_node.location_code
