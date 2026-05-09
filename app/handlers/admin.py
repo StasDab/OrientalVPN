@@ -21,16 +21,19 @@ from app.db.repositories import (
     create_promo_code,
     deactivate_promo,
     delete_all_promo_codes,
+    delete_all_subscription_rows,
     delete_subscriptions_for_user,
     extend_subscription_days,
     get_or_create_user,
     get_promo_by_code,
     get_user_by_tg_id,
     hard_delete_promo_by_code,
+    list_all_subscription_rows,
     list_all_subscription_rows_for_user,
     list_all_user_tg_ids,
     list_promo_codes_admin,
     normalize_promo_code,
+    reset_trial_used_for_all_users,
     revoke_user_subscriptions,
 )
 from app.db.session import SessionLocal
@@ -264,10 +267,15 @@ async def _subs_reset_admin_text() -> str:
         "<code>/wipe_subs &lt;tg_id&gt;</code> — удалить все строки подписок этого пользователя из БД "
         "(любой статус) + отключить соответствующих пользователей Marzban.\n"
         "<code>/add_days &lt;tg_id&gt; &lt;дней&gt;</code> — продлить активную подписку в БД и обновить expire в панели.\n\n"
-        "<b>Скрипты на VPS</b> (из корня <code>/opt/myvpn</code>, Marzban не трогают):\n"
-        "<code>.venv/bin/python scripts/reset_all_trials.py --dry-run</code>\n"
-        "<code>.venv/bin/python scripts/reset_all_trials.py --apply</code> — сброс trial у всех\n"
-        "<code>.venv/bin/python scripts/reset_all_trials.py --apply --wipe-subs</code> — то же + удалить все подписки\n"
+        "<b>Массово (опасно, нужно YES):</b>\n"
+        "<code>/wipe_all_subs YES</code> — удалить <b>все</b> строки подписок в БД + отключить соответствующих пользователей в Marzban по каждой строке.\n"
+        "<code>/reset_trials_all YES</code> — для <b>всех</b> пользователей <code>trial_used = false</code>.\n"
+        "<code>/reset_trials_all YES WIPE_SUBS</code> — то же и плюс удалить все подписки в БД (как скрипт <code>--wipe-subs</code>). Marzban для WIPE здесь же отключится по каждой подписке до удаления.\n\n"
+        "<b>Скрипты на VPS</b> — из корня <code>/opt/myvpn</code>: "
+        "(виртуальное окружение <code>/opt/myvpn/.venv</code>, не из каталога <code>app/</code>):\n"
+        "<code>/opt/myvpn/.venv/bin/python scripts/reset_all_trials.py --dry-run</code>\n"
+        "<code>/opt/myvpn/.venv/bin/python scripts/reset_all_trials.py --apply</code> — сброс trial у всех\n"
+        "<code>/opt/myvpn/.venv/bin/python scripts/reset_all_trials.py --apply --wipe-subs</code> — то же + удалить все подписки\n"
         "<code>.venv/bin/python scripts/reset_trial_for_tg.py &lt;tg_id&gt;</code> — сброс trial + удалить подписки одного\n"
         "<code>.venv/bin/python scripts/wipe_all_subscriptions.py --dry-run|--apply</code> — только подписки у всех, trial не трогать\n"
         "<code>.venv/bin/python scripts/wipe_subscriptions_for_tg.py &lt;tg_id&gt;</code> — только подписки одного\n\n"
@@ -681,6 +689,77 @@ async def cmd_wipe_subs(message: Message) -> None:
         await session.commit()
     await message.answer(
         f"Удалено записей подписок: <b>{n}</b>. Marzban отключён по {len(subs)} бывшим строкам.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("wipe_all_subs"))
+async def cmd_wipe_all_subs(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("Команда доступна только администраторам.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 2 or parts[1] != "YES":
+        await message.answer(
+            "Удалит <b>все</b> строки <code>subscriptions</code> у всех пользователей и попытается отключить доступ в "
+            "Marzban по каждой строке (<code>trial_used</code> не трогается).\n\n"
+            "Чтобы выполнить, отправьте ровно:\n<code>/wipe_all_subs YES</code>",
+            parse_mode="HTML",
+        )
+        return
+    async with SessionLocal() as session:
+        subs = await list_all_subscription_rows(session)
+    await _marzban_disable_for_subscriptions(subs)
+    async with SessionLocal() as session:
+        n = await delete_all_subscription_rows(session)
+        await session.commit()
+    await message.answer(
+        f"Готово. Удалено записей подписок: <b>{n}</b>. Marzban отключался по "
+        f"<b>{len(subs)}</b> строкам (ошибки панели в логе — отдельно).",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("reset_trials_all"))
+async def cmd_reset_trials_all(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("Команда доступна только администраторам.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2 or parts[1] != "YES":
+        await message.answer(
+            "Сброс флага <code>trial_used</code> у <b>всех</b> пользователей в БД бота "
+            "(как скрипт <code>reset_all_trials.py --apply</code>).\n\n"
+            "<b>Варианты подтверждения:</b>\n"
+            "<code>/reset_trials_all YES</code>\n"
+            "<code>/reset_trials_all YES WIPE_SUBS</code> — дополнительно удалить все подписки в БД и отключить Marzban по ним.",
+            parse_mode="HTML",
+        )
+        return
+    wipe_all = len(parts) >= 3 and parts[2].strip().upper() == "WIPE_SUBS"
+
+    if wipe_all:
+        async with SessionLocal() as session:
+            subs = await list_all_subscription_rows(session)
+            nsubs_rows = len(subs)
+        await _marzban_disable_for_subscriptions(subs)
+        async with SessionLocal() as session:
+            ndel = await delete_all_subscription_rows(session)
+            n_users = await reset_trial_used_for_all_users(session)
+            await session.commit()
+        await message.answer(
+            f"Готово. Подписей удалено в БД: <b>{ndel}</b> (было строк: {nsubs_rows}). "
+            f"Пользователей с обновлённым trial_used: <b>{n_users}</b>.",
+            parse_mode="HTML",
+        )
+        return
+
+    async with SessionLocal() as session:
+        n_users = await reset_trial_used_for_all_users(session)
+        await session.commit()
+    await message.answer(
+        f"Готово. У <b>{n_users}</b> записей в <code>users</code> установлено <code>trial_used = false</code>. "
+        "Подписки в БД не удалялись.",
         parse_mode="HTML",
     )
 

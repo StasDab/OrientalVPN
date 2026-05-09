@@ -399,6 +399,16 @@ async def delete_all_subscription_rows(session: AsyncSession) -> int:
     return int(r.rowcount or 0)  # type: ignore[arg-type]
 
 
+async def list_all_subscription_rows(session: AsyncSession) -> list[Subscription]:
+    row = await session.execute(select(Subscription))
+    return list(row.scalars().all())
+
+
+async def reset_trial_used_for_all_users(session: AsyncSession) -> int:
+    res = await session.execute(update(User).values(trial_used=False))
+    return int(res.rowcount or 0)  # type: ignore[arg-type]
+
+
 async def hard_delete_promo_by_code(session: AsyncSession, code: str) -> bool:
     c = normalize_promo_code(code)
     if not c:

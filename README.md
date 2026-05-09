@@ -48,7 +48,7 @@ cd /opt/myvpn && sudo -u myvpn ./scripts/migrate.sh
 
 ## Скрипты (`scripts/`)
 
-Все сценарии ниже читают **`DATABASE_URL`** из **корня репозитория** (файлы `/opt/myvpn/.env` и при наличии `/opt/myvpn/app/.env`). Конфиг только в `app/.env` допустим — тогда положите переменные там. **Marzban** эти скрипты **не вызывают**; отключение пользователей в панели — через бота (`/revoke`, `/wipe_subs`) или вручную.
+Все сценарии ниже читают **`DATABASE_URL`** из **корня репозитория** (файлы `/opt/myvpn/.env` и при наличии `/opt/myvpn/app/.env`). Конфиг только в `app/.env` допустим — тогда положите переменные там. **`venv`** обычно лежит в **`/opt/myvpn/.venv`**, каталог **`/opt/myvpn/app/`** сам по себе не содержит `scripts/` и `.venv` — команды выполнять после **`cd /opt/myvpn`**. В Telegram у админа есть **`/wipe_all_subs YES`** и **`/reset_trials_all YES`** (с отключением Marzban по каждой подписке при массовом удалении через бота). Скрипты Marzban **не вызывают** — для массовой очистки с панелью удобнее бот.
 
 | Скрипт | Что делает |
 |--------|------------|
@@ -62,6 +62,8 @@ cd /opt/myvpn && sudo -u myvpn ./scripts/migrate.sh
 | `replace_subscription_prefix.py` | Пакетная замена префикса в URL подписок в таблице |
 
 ### Примеры на VPS
+
+Неверный путь `No such file or directory` для `.venv/bin/python` чаще всего из‑за каталога: вы в **`/opt/myvpn/app`**, а интерпретатор — **`/opt/myvpn/.venv/bin/python`**.
 
 ```bash
 cd /opt/myvpn
@@ -83,7 +85,7 @@ sudo -u myvpn -H bash -lc 'cd /opt/myvpn && .venv/bin/python scripts/wipe_subscr
 ## Команды и меню бота
 
 - Пользователь: `/start`, `/buy`, `/trial`, `/my`, `/profile`, `/help`, `/cancel` (отмена ввода суммы пополнения)
-- Админ (если `tg_id` в `ADMIN_IDS`): `/stats`, `/servers`, `/promo_add`, `/promo_set`, `/promo_off`, `/promo_delete`, `/promo_wipe_all`, `/give_sub`, `/add_days`, `/revoke`, `/wipe_subs`, `/broadcast`, `/cancel`; в меню — разделы **Промокоды** и **Подписки / сброс** с подсказками по ключевым командам.
+- Админ (если `tg_id` в `ADMIN_IDS`): `/stats`, `/servers`, `/promo_*`, `/give_sub`, `/add_days`, `/revoke`, `/wipe_subs`, **`/wipe_all_subs`**, **`/reset_trials_all`**, `/broadcast`, `/cancel`; в меню — **Промокоды** и **Подписки / сброс** (`/wipe_all_subs YES`, `/reset_trials_all YES`, при необходимости третьим словом **`WIPE_SUBS`**).
 
 ## Шлюз подписки и nginx
 
