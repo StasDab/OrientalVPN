@@ -1,12 +1,8 @@
 from pathlib import Path
 import json
-import logging
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-_log_cfg = logging.getLogger(__name__)
-_vpn_sidecar_logged = False
 
 
 class Settings(BaseSettings):
@@ -122,8 +118,6 @@ class Settings(BaseSettings):
 
     @property
     def vpn_nodes(self) -> list[dict]:
-        global _vpn_sidecar_logged
-
         fp = (self.vpn_nodes_json_file or "").strip()
         if fp:
             try:
@@ -149,14 +143,6 @@ class Settings(BaseSettings):
                     got = Settings._parse_vpn_nodes_array(path.read_text(encoding="utf-8"))
                     if got is None:
                         continue
-                    if not _vpn_sidecar_logged:
-                        _log_cfg.warning(
-                            "Не удалось использовать VPN_NODES_JSON из окружения (пусто, ошибка парсинга "
-                            "или только «[» — многострочный JSON в .env типично ломается). "
-                            "Узлы загружены из %s — храните ноды в этом файле или в VPN_NODES_JSON_FILE.",
-                            path.resolve(),
-                        )
-                        _vpn_sidecar_logged = True
                     return got
                 except OSError:
                     continue
