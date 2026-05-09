@@ -1,0 +1,29 @@
+[
+  {
+    "location_code": "se",
+    "inbound_tag": "loc-se",
+    "link_matches": ["138.124.", "stockholm", "se"],
+    "api_url": "https://panel.example.com:8443",
+    "capacity": 1000,
+    "current_load": 0,
+    "is_healthy": true
+  },
+  {
+    "location_code": "us",
+    "inbound_tag": "loc-us",
+    "link_matches": ["77.110.", "charlotte", "us"],
+    "api_url": "https://panel.example.com:8443",
+    "capacity": 1000,
+    "current_load": 0,
+    "is_healthy": true
+  },
+  {
+    "location_code": "fi",
+    "inbound_tag": "loc-fi",
+    "link_matches": ["185.153.", "finland", "fi"],
+    "api_url": "https://panel.example.com:8443",
+    "capacity": 1000,
+    "current_load": 0,
+    "is_healthy": true
+  }
+]

@@ -1,8 +1,12 @@
 from pathlib import Path
+import json
+import logging
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-import json
+
+_log_cfg = logging.getLogger(__name__)
+_vpn_sidecar_logged = False
 
 
 class Settings(BaseSettings):
@@ -48,7 +52,8 @@ class Settings(BaseSettings):
     provision_retries: int = Field(default=3, alias="PROVISION_RETRIES")
     event_max_retries: int = Field(default=30, alias="EVENT_MAX_RETRIES")
     reminder_hours_before: int = Field(default=24, alias="REMINDER_HOURS_BEFORE")
-    vpn_nodes_json: str = Field(default="[]", alias="VPN_NODES_JSON")
+    # Пустое = «не задано» → можно подхватить vpn_nodes.json рядом с репо. Явное [] в .env = реально без нод из env.
+    vpn_nodes_json: str = Field(default="", alias="VPN_NODES_JSON")
     # Альтернатива одной строке в .env: путь к JSON-массиву нод (удобно для systemd без многострочного значения).
     vpn_nodes_json_file: str = Field(default="", alias="VPN_NODES_JSON_FILE")
     # По умолчанию Vision — типичный REALITY в Marzban. Отключить: MARZBAN_VLESS_FLOW= в .env (пусто).
@@ -102,24 +107,60 @@ class Settings(BaseSettings):
             return not bool(self.provider_token.strip())
         return False
 
+    @staticmethod
+    def _parse_vpn_nodes_array(raw: str) -> list[dict] | None:
+        s = raw.replace("\r", "").strip()
+        if not s:
+            return None
+        try:
+            data = json.loads(s)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, list):
+            return None
+        return [x for x in data if isinstance(x, dict)]
+
     @property
     def vpn_nodes(self) -> list[dict]:
-        raw = ""
+        global _vpn_sidecar_logged
+
         fp = (self.vpn_nodes_json_file or "").strip()
         if fp:
             try:
-                p = Path(fp)
-                if p.is_file():
-                    raw = p.read_text(encoding="utf-8")
+                path = Path(fp)
+                if path.is_file():
+                    got = Settings._parse_vpn_nodes_array(path.read_text(encoding="utf-8"))
+                    if got is not None:
+                        return got
             except OSError:
-                raw = ""
-        if not raw.strip():
-            raw = (self.vpn_nodes_json or "").replace("\r", "").strip()
-        try:
-            data = json.loads(raw)
-            return data if isinstance(data, list) else []
-        except json.JSONDecodeError:
-            return []
+                pass
+
+        inline = (self.vpn_nodes_json or "").replace("\r", "").strip()
+        if inline:
+            parsed = Settings._parse_vpn_nodes_array(inline)
+            if parsed is not None:
+                return parsed
+
+        cwd = Path.cwd()
+        for rel in ("vpn_nodes.json", Path("app") / "vpn_nodes.json"):
+            path = cwd / rel
+            if path.is_file():
+                try:
+                    got = Settings._parse_vpn_nodes_array(path.read_text(encoding="utf-8"))
+                    if got is None:
+                        continue
+                    if not _vpn_sidecar_logged:
+                        _log_cfg.warning(
+                            "Не удалось использовать VPN_NODES_JSON из окружения (пусто, ошибка парсинга "
+                            "или только «[» — многострочный JSON в .env типично ломается). "
+                            "Узлы загружены из %s — храните ноды в этом файле или в VPN_NODES_JSON_FILE.",
+                            path.resolve(),
+                        )
+                        _vpn_sidecar_logged = True
+                    return got
+                except OSError:
+                    continue
+        return []
 
 
 settings = Settings()
