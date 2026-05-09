@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.redis import RedisStorage
@@ -22,6 +23,11 @@ POLLING_ALLOWED_UPDATES = [
 
 async def main() -> None:
     setup_logging()
+    _log = logging.getLogger(__name__)
+    if not settings.vpn_nodes:
+        _log.warning(
+            "vpn_nodes пуст: проверьте VPN_NODES_JSON или VPN_NODES_JSON_FILE — иначе недоступны /give_sub, пробный и т.п."
+        )
     await start_subscription_gate_server()
     bot = Bot(token=settings.bot_token)
     storage = RedisStorage.from_url(settings.redis_url)

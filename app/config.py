@@ -1,10 +1,17 @@
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import json
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # Корень (/opt/myvpn) и каталог app/ — чтобы не терять ключи из app/.env при WorkingDirectory=/opt/myvpn.
+    model_config = SettingsConfigDict(
+        env_file=(".env", "app/.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     bot_token: str = Field(alias="BOT_TOKEN")
     provider_token: str = Field(default="", alias="PROVIDER_TOKEN")
@@ -42,6 +49,8 @@ class Settings(BaseSettings):
     event_max_retries: int = Field(default=30, alias="EVENT_MAX_RETRIES")
     reminder_hours_before: int = Field(default=24, alias="REMINDER_HOURS_BEFORE")
     vpn_nodes_json: str = Field(default="[]", alias="VPN_NODES_JSON")
+    # Альтернатива одной строке в .env: путь к JSON-массиву нод (удобно для systemd без многострочного значения).
+    vpn_nodes_json_file: str = Field(default="", alias="VPN_NODES_JSON_FILE")
     # По умолчанию Vision — типичный REALITY в Marzban. Отключить: MARZBAN_VLESS_FLOW= в .env (пусто).
     marzban_vless_flow: str = Field(default="xtls-rprx-vision", alias="MARZBAN_VLESS_FLOW")
     # uTLS fingerprint в payload Marzban (proxies.vless). Ссылки в /sub/... берут fp из Host inbound в панели
@@ -95,8 +104,18 @@ class Settings(BaseSettings):
 
     @property
     def vpn_nodes(self) -> list[dict]:
-        try:
+        raw = ""
+        fp = (self.vpn_nodes_json_file or "").strip()
+        if fp:
+            try:
+                p = Path(fp)
+                if p.is_file():
+                    raw = p.read_text(encoding="utf-8")
+            except OSError:
+                raw = ""
+        if not raw.strip():
             raw = (self.vpn_nodes_json or "").replace("\r", "").strip()
+        try:
             data = json.loads(raw)
             return data if isinstance(data, list) else []
         except json.JSONDecodeError:

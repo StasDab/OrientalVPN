@@ -792,11 +792,21 @@ async def cmd_give_sub(message: Message) -> None:
     days = plan_days(plan_code)
 
     if not available_location_codes():
-        await message.answer("Нет узлов VPN: проверьте <code>VPN_NODES_JSON</code>.", parse_mode="HTML")
+        await message.answer(
+            "Бот не видит ни одной ноды (пустой или битый JSON).\n\n"
+            "<b>Проверьте:</b>\n"
+            "• <code>VPN_NODES_JSON</code> — валидный JSON-массив; в systemd многострочные значения часто <b>обрезаются</b> — "
+            "сложите массив в одну строку или используйте <code>VPN_NODES_JSON_FILE=/opt/myvpn/vpn_nodes.json</code>.\n"
+            "• Параметры из <code>/opt/myvpn/app/.env</code> теперь подхватываются вместе с корневым <code>.env</code> "
+            "(рабочий каталог сервиса — <code>/opt/myvpn</code>).\n\n"
+            "На сервере: <code>cd /opt/myvpn &amp;&amp; .venv/bin/python -c \"from app.config import settings; print(len(settings.vpn_nodes))\"</code>\n"
+            "должно вывести число &gt; 0.",
+            parse_mode="HTML",
+        )
         return
     chosen = pick_primary_node()
     if not chosen:
-        await message.answer("Нет доступной ноды для выдачи.")
+        await message.answer("Нет ни одной записи ноды после разбора конфига (неожиданно).")
         return
     loc_code = chosen.location_code
 

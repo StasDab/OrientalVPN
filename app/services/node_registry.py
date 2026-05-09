@@ -72,10 +72,12 @@ def pick_node_for_location(location_code: str) -> VpnNode | None:
 
 def pick_primary_node() -> VpnNode | None:
     """Первая здоровая нода по алфавиту location_code — для выдачи, когда локация не выбирается."""
-    nodes = [n for n in load_nodes() if n.is_healthy]
-    if not nodes:
+    all_n = load_nodes()
+    if not all_n:
         return None
-    return sorted(nodes, key=lambda n: n.location_code.lower())[0]
+    healthy = [n for n in all_n if n.is_healthy]
+    pool = healthy if healthy else all_n
+    return sorted(pool, key=lambda n: n.location_code.lower())[0]
 
 
 def all_vless_inbound_tags_same_panel(panel_url: str) -> list[str]:
