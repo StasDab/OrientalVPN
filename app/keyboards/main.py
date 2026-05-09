@@ -93,6 +93,7 @@ def admin_panel_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
             [InlineKeyboardButton(text="🖥 Серверы", callback_data="admin_servers")],
             [InlineKeyboardButton(text="🎟 Промокоды", callback_data="admin_promos")],
+            [InlineKeyboardButton(text="📁 Подписки / сброс", callback_data="admin_subs")],
             [InlineKeyboardButton(text="🤝 Рефералы", callback_data="admin_referrals")],
             [InlineKeyboardButton(text="📣 Рассылка", callback_data="admin_broadcast")],
             [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_home")],

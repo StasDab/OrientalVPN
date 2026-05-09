@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 import json
 
-from sqlalchemy import Select, func, select, update
+from sqlalchemy import Select, delete, func, select, update
 
 from app.config import settings
 from app.datetime_util import utc_now_naive
@@ -382,6 +382,34 @@ async def revoke_user_subscriptions(session: AsyncSession, user_id: int) -> list
     for s in subs:
         s.status = "revoked"
     return subs
+
+
+async def list_all_subscription_rows_for_user(session: AsyncSession, user_id: int) -> list[Subscription]:
+    row = await session.execute(select(Subscription).where(Subscription.user_id == user_id))
+    return list(row.scalars().all())
+
+
+async def delete_subscriptions_for_user(session: AsyncSession, user_id: int) -> int:
+    r = await session.execute(delete(Subscription).where(Subscription.user_id == user_id))
+    return int(r.rowcount or 0)  # type: ignore[arg-type]
+
+
+async def delete_all_subscription_rows(session: AsyncSession) -> int:
+    r = await session.execute(delete(Subscription))
+    return int(r.rowcount or 0)  # type: ignore[arg-type]
+
+
+async def hard_delete_promo_by_code(session: AsyncSession, code: str) -> bool:
+    c = normalize_promo_code(code)
+    if not c:
+        return False
+    res = await session.execute(delete(PromoCode).where(PromoCode.code == c))
+    return int(res.rowcount or 0) > 0  # type: ignore[arg-type]
+
+
+async def delete_all_promo_codes(session: AsyncSession) -> int:
+    res = await session.execute(delete(PromoCode))
+    return int(res.rowcount or 0)  # type: ignore[arg-type]
 
 
 async def list_expired_active_subscriptions(session: AsyncSession) -> list[Subscription]:

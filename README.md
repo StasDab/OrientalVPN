@@ -48,20 +48,30 @@ cd /opt/myvpn && sudo -u myvpn ./scripts/migrate.sh
 
 ## Скрипты (`scripts/`)
 
-| Скрипт | Назначение |
+Все сценарии ниже читают **`DATABASE_URL`** из **корня репозитория** (файлы `/opt/myvpn/.env` и при наличии `/opt/myvpn/app/.env`). Конфиг только в `app/.env` допустим — тогда положите переменные там. **Marzban** эти скрипты **не вызывают**; отключение пользователей в панели — через бота (`/revoke`, `/wipe_subs`) или вручную.
+
+| Скрипт | Что делает |
 |--------|------------|
 | `migrate.sh` | `alembic upgrade head` из корня репо |
-| `reset_trial_for_tg.py <tg_id>` | Сброс `trial_used` и удаление подписок пользователя в **БД бота** (Marzban не трогает). Читает `DATABASE_URL` из `.env` или `app/.env` **в корне репо** (`/opt/myvpn`, не из `/opt/myvpn/app` только). |
-| `reset_all_trials.py` | Сброс `trial_used` у всех пользователей (осторожно) |
+| `reset_all_trials.py` | **`--dry-run`** / **`--apply`**: сброс `trial_used = false` у **всех** пользователей. Опционально **`--apply --wipe-subs`**: то же + `DELETE FROM subscriptions` у всех. |
+| `reset_trial_for_tg.py <tg_id>` | Сброс пробного **одного** пользователя: `trial_used = false` и удаление его строк `subscriptions` в БД бота. |
+| `wipe_all_subscriptions.py` | Только подписки: **`--dry-run`** или **`--apply`** — `DELETE FROM subscriptions` для **всех**; `trial_used` **не** меняется. |
+| `wipe_subscriptions_for_tg.py <tg_id>` | Только подписки **одного** `tg_id`; `trial_used` **не** меняется. Marzban отдельно при необходимости. |
 | `fix_postgres_password.py` | Синхронизация пароля роли PostgreSQL с `DATABASE_URL` |
 | `ensure_postgres_database.py` | Создание БД, если её нет |
-| `replace_subscription_prefix.py` | Пакетная замена префикса в URL подписок (если нужно) |
+| `replace_subscription_prefix.py` | Пакетная замена префикса в URL подписок в таблице |
 
-Пример сброса пробного периода на сервере:
+### Примеры на VPS
 
 ```bash
 cd /opt/myvpn
-/opt/myvpn/.venv/bin/python scripts/reset_trial_for_tg.py 731162352
+sudo -u myvpn -H bash -lc 'cd /opt/myvpn && .venv/bin/python scripts/reset_all_trials.py --dry-run'
+sudo -u myvpn -H bash -lc 'cd /opt/myvpn && .venv/bin/python scripts/reset_all_trials.py --apply'
+sudo -u myvpn -H bash -lc 'cd /opt/myvpn && .venv/bin/python scripts/reset_all_trials.py --apply --wipe-subs'
+sudo -u myvpn -H bash -lc 'cd /opt/myvpn && .venv/bin/python scripts/reset_trial_for_tg.py 731162352'
+sudo -u myvpn -H bash -lc 'cd /opt/myvpn && .venv/bin/python scripts/wipe_all_subscriptions.py --dry-run'
+sudo -u myvpn -H bash -lc 'cd /opt/myvpn && .venv/bin/python scripts/wipe_all_subscriptions.py --apply'
+sudo -u myvpn -H bash -lc 'cd /opt/myvpn && .venv/bin/python scripts/wipe_subscriptions_for_tg.py 731162352'
 ```
 
 ## Баланс и оплата
@@ -73,7 +83,7 @@ cd /opt/myvpn
 ## Команды и меню бота
 
 - Пользователь: `/start`, `/buy`, `/trial`, `/my`, `/profile`, `/help`, `/cancel` (отмена ввода суммы пополнения)
-- Админ (если `tg_id` в `ADMIN_IDS`): `/stats`, `/servers`, `/add_days`, `/revoke`, `/broadcast`, `/cancel`
+- Админ (если `tg_id` в `ADMIN_IDS`): `/stats`, `/servers`, `/promo_add`, `/promo_set`, `/promo_off`, `/promo_delete`, `/promo_wipe_all`, `/give_sub`, `/add_days`, `/revoke`, `/wipe_subs`, `/broadcast`, `/cancel`; в меню — разделы **Промокоды** и **Подписки / сброс** с подсказками по ключевым командам.
 
 ## Шлюз подписки и nginx
 

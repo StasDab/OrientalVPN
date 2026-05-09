@@ -1,6 +1,7 @@
 import asyncio
 import html as html_escape
 import logging
+from datetime import datetime, timedelta
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -10,15 +11,23 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
-from app.datetime_util import naive_utc_timestamp
+from app.datetime_util import naive_utc_timestamp, utc_now_naive
+from app.db.models import Subscription
 from app.db.repositories import (
     admin_stats_snapshot,
     count_active_subscriptions_by_node_url,
     count_users_with_referrer,
+    create_or_extend_subscription,
     create_promo_code,
     deactivate_promo,
+    delete_all_promo_codes,
+    delete_subscriptions_for_user,
     extend_subscription_days,
+    get_or_create_user,
+    get_promo_by_code,
     get_user_by_tg_id,
+    hard_delete_promo_by_code,
+    list_all_subscription_rows_for_user,
     list_all_user_tg_ids,
     list_promo_codes_admin,
     normalize_promo_code,
@@ -26,8 +35,11 @@ from app.db.repositories import (
 )
 from app.db.session import SessionLocal
 from app.keyboards.main import admin_nav_back_kb, admin_panel_kb
-from app.services.node_registry import load_nodes
+from app.plans import PLAN_MAP, plan_days
+from app.services.node_registry import available_location_codes, load_nodes, pick_primary_node
+from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
+from app.telegram_format import subscription_url_pre_block
 from app.states import BroadcastStates
 
 log = logging.getLogger(__name__)
@@ -35,6 +47,84 @@ log = logging.getLogger(__name__)
 router = Router()
 
 ADMIN_HOME_HTML = "🛠️ <b>Панель администратора</b>\n\nВыберите раздел:"
+
+
+def _parse_promo_trailing(parts: list[str], start: int) -> tuple[dict[str, object], str | None]:
+    """Опциональные хвосты для /promo_add и ключи для /promo_set: max_uses, per_user, expires_days, expires_at."""
+    extras: dict[str, object] = {}
+    i = start
+    while i < len(parts):
+        key = parts[i].lower()
+        if key == "max_uses":
+            if i + 1 >= len(parts):
+                return {}, "После max_uses укажите число или none."
+            vlow = parts[i + 1].lower()
+            if vlow in ("none", "unlimited"):
+                extras["max_uses"] = None
+            else:
+                try:
+                    mu = int(parts[i + 1])
+                except ValueError:
+                    return {}, "max_uses должен быть целым числом или none/unlimited."
+                if mu < 1:
+                    return {}, "max_uses должно быть ≥ 1 или none/unlimited."
+                extras["max_uses"] = mu
+            i += 2
+            continue
+        if key in ("per_user", "max_per_user"):
+            if i + 1 >= len(parts):
+                return {}, "После per_user нужно число ≥ 1."
+            try:
+                pu = int(parts[i + 1])
+            except ValueError:
+                return {}, "per_user: целое число."
+            if pu < 1:
+                return {}, "per_user ≥ 1."
+            extras["max_uses_per_user"] = pu
+            i += 2
+            continue
+        if key == "expires_days":
+            if i + 1 >= len(parts):
+                return {}, "После expires_days нужно число дней."
+            try:
+                days = int(parts[i + 1])
+            except ValueError:
+                return {}, "expires_days: целое число."
+            if not (1 <= days <= 3650):
+                return {}, "expires_days: 1–3650."
+            extras["expires_at"] = utc_now_naive() + timedelta(days=days)
+            i += 2
+            continue
+        if key == "expires_at":
+            if i + 1 >= len(parts):
+                return {}, "После expires_at нужна дата YYYY-MM-DD."
+            try:
+                d = datetime.strptime(parts[i + 1], "%Y-%m-%d").date()
+            except ValueError:
+                return {}, "Формат даты: YYYY-MM-DD."
+            extras["expires_at"] = datetime(d.year, d.month, d.day)
+            i += 2
+            continue
+        if key == "expires_clear":
+            extras["expires_at"] = None
+            i += 1
+            continue
+        return {}, f"Неизвестный параметр «{parts[i]}»."
+    return extras, None
+
+
+async def _marzban_disable_for_subscriptions(subs: list[Subscription]) -> None:
+    """Отключить пользователей Marzban по строкам Subscription (ошибки глотаем по одной строке)."""
+    for s in subs:
+        try:
+            provider = MarzbanAdapter(
+                panel_url=s.node_api_url,
+                username=settings.panel_username,
+                password=settings.panel_password,
+            )
+            await provider.disable_access(s.external_user_id)
+        except Exception:
+            continue
 
 
 def is_admin(tg_id: int | None) -> bool:
@@ -119,11 +209,20 @@ async def _promos_admin_text() -> str:
         rows = await list_promo_codes_admin(session, limit=25)
     buf = [
         "🎟️ <b>Промокоды</b>\n\n",
-        "Создание (только админы):\n"
-        "<code>/promo_add percent CODE 15</code> — 15 % с тарифа\n"
-        "<code>/promo_add fixed CODE 100</code> — 100 ₽ с тарифа (в рублях)\n"
-        "<code>/promo_add days CODE 14</code> — 14 дн. доступа при вводе в профиле\n"
-        "<code>/promo_off CODE</code> — выключить\n\n",
+        "<b>Создать:</b>\n"
+        "<code>/promo_add percent CODE 15</code> — скидка % с тарифа\n"
+        "<code>/promo_add fixed CODE 100</code> — минус сумма в ₽ с тарифа\n"
+        "<code>/promo_add days CODE 14</code> — бонус дней при вводе в профиле\n\n"
+        "<b>Опции в том же сообщении после основных полей:</b>\n"
+        "<code>max_uses N</code> или <code>max_uses none</code>\n"
+        "<code>per_user N</code> — активаций на одного человека\n"
+        "<code>expires_days N</code> или <code>expires_at YYYY-MM-DD</code>\n\n"
+        "<b>Изменить / выключить / удалить:</b>\n"
+        "<code>/promo_set CODE max_uses 100 expires_days 30</code>\n"
+        "<code>/promo_set CODE expires_clear</code> — снять дату истечения\n"
+        "<code>/promo_off CODE</code> — выключить (остаётся в БД)\n"
+        "<code>/promo_delete CODE</code> — удалить код и связанные записи\n"
+        "<code>/promo_wipe_all YES</code> — удалить все промокоды (подтверждение обязательно)\n\n"
         "<b>Последние промокоды:</b>",
     ]
     if not rows:
@@ -140,11 +239,40 @@ async def _promos_admin_text() -> str:
             extra = f"{pr.bonus_days or 0} дн."
         mx = pr.max_uses if pr.max_uses is not None else "∞"
         act = "вкл" if pr.is_active else "выкл"
+        xp = ""
+        if pr.expires_at:
+            xp = ", до " + pr.expires_at.strftime("%Y-%m-%d %H:%M") + " UTC"
+        pu = getattr(pr, "max_uses_per_user", 1)
         buf.append(
             f"\n• <code>{html_escape.escape(pr.code)}</code> ({kind_ru} {extra}) "
-            f"— {pr.uses_count}/{mx}, {act}"
+            f"— активаций {pr.uses_count}/{mx}, на чел. ≤{pu}{xp}, {act}"
         )
     return "".join(buf)
+
+
+async def _subs_reset_admin_text() -> str:
+    return (
+        "📁 <b>Подписки и сброс</b>\n\n"
+        "<b>Выдача подписки (Marzban + БД бота, без платежа):</b>\n"
+        "<code>/give_sub &lt;tg_id&gt; &lt;тариф&gt;</code> — как при покупке тарифа из «Купить»: "
+        "<code>1m</code>, <code>3m</code>, <code>6m</code>, <code>12m</code>. "
+        "Продлевает текущую активную подписку или создаёт новую; пользователю уходит личное сообщение со ссылкой (если возможно).\n\n"
+        "Остальные команды ниже управляют записями в БД; Marzban отключается там, где указано.\n\n"
+        "<b>Через бота:</b>\n"
+        "<code>/revoke &lt;tg_id&gt;</code> — активные подписки → статус <code>revoked</code> в БД + "
+        "<code>disable</code> в Marzban по каждой записи.\n"
+        "<code>/wipe_subs &lt;tg_id&gt;</code> — удалить все строки подписок этого пользователя из БД "
+        "(любой статус) + отключить соответствующих пользователей Marzban.\n"
+        "<code>/add_days &lt;tg_id&gt; &lt;дней&gt;</code> — продлить активную подписку в БД и обновить expire в панели.\n\n"
+        "<b>Скрипты на VPS</b> (из корня <code>/opt/myvpn</code>, Marzban не трогают):\n"
+        "<code>.venv/bin/python scripts/reset_all_trials.py --dry-run</code>\n"
+        "<code>.venv/bin/python scripts/reset_all_trials.py --apply</code> — сброс trial у всех\n"
+        "<code>.venv/bin/python scripts/reset_all_trials.py --apply --wipe-subs</code> — то же + удалить все подписки\n"
+        "<code>.venv/bin/python scripts/reset_trial_for_tg.py &lt;tg_id&gt;</code> — сброс trial + удалить подписки одного\n"
+        "<code>.venv/bin/python scripts/wipe_all_subscriptions.py --dry-run|--apply</code> — только подписки у всех, trial не трогать\n"
+        "<code>.venv/bin/python scripts/wipe_subscriptions_for_tg.py &lt;tg_id&gt;</code> — только подписки одного\n\n"
+        "Подробнее — раздел «Скрипты» в <code>README.md</code>."
+    )
 
 
 async def _referrals_admin_text() -> str:
@@ -224,6 +352,15 @@ async def callback_admin_promos(call: CallbackQuery) -> None:
         return
     await call.answer()
     await _nav_edit_admin_message(call, await _promos_admin_text(), admin_nav_back_kb())
+
+
+@router.callback_query(F.data == "admin_subs")
+async def callback_admin_subs(call: CallbackQuery) -> None:
+    if not is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await call.answer()
+    await _nav_edit_admin_message(call, await _subs_reset_admin_text(), admin_nav_back_kb())
 
 
 @router.callback_query(F.data == "admin_referrals")
@@ -316,6 +453,19 @@ async def cmd_promo_add(message: Message) -> None:
         await message.answer("Неизвестный тип. Используйте percent, fixed или days.")
         return
 
+    extras, terr = _parse_promo_trailing(parts, 4)
+    if terr:
+        await message.answer(terr)
+        return
+
+    pk_kwargs: dict = {}
+    if "max_uses" in extras:
+        pk_kwargs["max_uses"] = extras["max_uses"]
+    if "max_uses_per_user" in extras:
+        pk_kwargs["max_uses_per_user"] = int(extras["max_uses_per_user"])
+    if "expires_at" in extras:
+        pk_kwargs["expires_at"] = extras["expires_at"]
+
     async with SessionLocal() as session:
         try:
             row = await create_promo_code(
@@ -325,6 +475,7 @@ async def cmd_promo_add(message: Message) -> None:
                 discount_percent=dpct,
                 discount_fixed_minor=dfixed,
                 bonus_days=bdays,
+                **pk_kwargs,
             )
             await session.commit()
         except IntegrityError:
@@ -352,6 +503,81 @@ async def cmd_promo_off(message: Message) -> None:
         await message.answer(f"Промокод <code>{html_escape.escape(code)}</code> выключен.", parse_mode="HTML")
     else:
         await message.answer("Код не найден или уже изменён.")
+
+
+@router.message(Command("promo_set"))
+async def cmd_promo_set(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админы.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer(
+            "Формат:\n<code>/promo_set CODE max_uses 100 expires_days 30</code>\n"
+            "<code>/promo_set CODE expires_at 2026-12-31</code>\n"
+            "<code>/promo_set CODE expires_clear</code>",
+            parse_mode="HTML",
+        )
+        return
+    code = normalize_promo_code(parts[1])
+    extras, terr = _parse_promo_trailing(parts, 2)
+    if terr:
+        await message.answer(terr)
+        return
+    if not extras:
+        await message.answer("Укажите хотя бы одно поле (max_uses, per_user, expires_days, expires_at, expires_clear).")
+        return
+    async with SessionLocal() as session:
+        pr = await get_promo_by_code(session, code)
+        if not pr:
+            await message.answer("Промокод не найден.")
+            return
+        if "max_uses" in extras:
+            pr.max_uses = extras["max_uses"]  # type: ignore[assignment]
+        if "max_uses_per_user" in extras:
+            pr.max_uses_per_user = int(extras["max_uses_per_user"])
+        if "expires_at" in extras:
+            pr.expires_at = extras["expires_at"]  # type: ignore[assignment]
+        await session.commit()
+    await message.answer(f"Обновлено: <code>{html_escape.escape(code)}</code>.", parse_mode="HTML")
+
+
+@router.message(Command("promo_delete"))
+async def cmd_promo_delete(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админы.")
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) != 2 or not normalize_promo_code(parts[1]):
+        await message.answer("Формат: <code>/promo_delete CODE</code>", parse_mode="HTML")
+        return
+    code = normalize_promo_code(parts[1])
+    async with SessionLocal() as session:
+        ok = await hard_delete_promo_by_code(session, code)
+        await session.commit()
+    if ok:
+        await message.answer(f"Промокод <code>{html_escape.escape(code)}</code> удалён из БД.", parse_mode="HTML")
+    else:
+        await message.answer("Код не найден.")
+
+
+@router.message(Command("promo_wipe_all"))
+async def cmd_promo_wipe_all(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("Только админы.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 2 or parts[1] != "YES":
+        await message.answer(
+            "Удалятся <b>все</b> промокоды и связанные активации. "
+            "Для подтверждения отправьте ровно:\n<code>/promo_wipe_all YES</code>",
+            parse_mode="HTML",
+        )
+        return
+    async with SessionLocal() as session:
+        n = await delete_all_promo_codes(session)
+        await session.commit()
+    await message.answer(f"Удалено промокодов из БД: <b>{n}</b>.", parse_mode="HTML")
 
 
 @router.message(Command("add_days"))
@@ -417,17 +643,153 @@ async def cmd_revoke(message: Message) -> None:
             return
         subs = await revoke_user_subscriptions(session, user.id)
         await session.commit()
-    for s in subs:
-        try:
-            provider = MarzbanAdapter(
-                panel_url=s.node_api_url,
-                username=settings.panel_username,
-                password=settings.panel_password,
-            )
-            await provider.disable_access(s.external_user_id)
-        except Exception:
-            continue
+    await _marzban_disable_for_subscriptions(subs)
     await message.answer(f"Отозвано подписок в БД: {len(subs)}. Доступ в панели отключён.")
+
+
+@router.message(Command("wipe_subs"))
+async def cmd_wipe_subs(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("Команда доступна только администраторам.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 2:
+        await message.answer(
+            "Удалить все строки подписок пользователя в БД бота и отключить узлы в Marzban.\n"
+            "Формат: <code>/wipe_subs &lt;tg_id&gt;</code>",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        tg_target = int(parts[1])
+    except ValueError:
+        await message.answer("tg_id должен быть числом.")
+        return
+    async with SessionLocal() as session:
+        user = await get_user_by_tg_id(session, tg_target)
+        if not user:
+            await message.answer("Пользователь не найден.")
+            return
+        subs = await list_all_subscription_rows_for_user(session, user.id)
+    await _marzban_disable_for_subscriptions(subs)
+    async with SessionLocal() as session:
+        user = await get_user_by_tg_id(session, tg_target)
+        if not user:
+            await message.answer("Пользователь пропал из БД между запросами.")
+            return
+        n = await delete_subscriptions_for_user(session, user.id)
+        await session.commit()
+    await message.answer(
+        f"Удалено записей подписок: <b>{n}</b>. Marzban отключён по {len(subs)} бывшим строкам.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("give_sub"))
+async def cmd_give_sub(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("Команда доступна только администраторам.")
+        return
+    parts = (message.text or "").split()
+    tariffs = ", ".join(sorted(PLAN_MAP.keys()))
+    if len(parts) != 3:
+        await message.answer(
+            "<b>Выдача подписки пользователю по Telegram ID</b> "
+            "(создание или продление в Marzban и запись в БД бота, без оплаты).\n\n"
+            f"Формат:\n<code>/give_sub &lt;tg_id&gt; &lt;тариф&gt;</code>\n"
+            f"Тарифы: <code>{tariffs}</code>",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        tg_target = int(parts[1])
+    except ValueError:
+        await message.answer("tg_id должен быть числом.")
+        return
+    plan_code = parts[2].strip().lower()
+    if plan_code not in PLAN_MAP:
+        await message.answer(f"Неизвестный тариф. Используйте: <code>{tariffs}</code>.", parse_mode="HTML")
+        return
+    days = plan_days(plan_code)
+
+    if not available_location_codes():
+        await message.answer("Нет узлов VPN: проверьте <code>VPN_NODES_JSON</code>.", parse_mode="HTML")
+        return
+    chosen = pick_primary_node()
+    if not chosen:
+        await message.answer("Нет доступной ноды для выдачи.")
+        return
+    loc_code = chosen.location_code
+
+    provider = MarzbanAdapter(
+        panel_url=chosen.api_url,
+        username=settings.panel_username,
+        password=settings.panel_password,
+    )
+    try:
+        result = await with_retry(
+            lambda: provider.provision_access(
+                tg_target,
+                loc_code,
+                node=chosen,
+                days=days,
+            ),
+            retries=settings.provision_retries,
+            base_delay_seconds=1.0,
+        )
+    except Exception:
+        log.exception(
+            "admin_give_sub_marzban_failed",
+            extra={"tg_id": tg_target, "plan": plan_code},
+        )
+        await message.answer("Marzban вернул ошибку — подписка не сохранена. Смотрите логи сервиса.")
+        return
+
+    async with SessionLocal() as session:
+        user = await get_or_create_user(session, tg_id=tg_target, username=None)
+        try:
+            sub_row = await create_or_extend_subscription(
+                session=session,
+                user_id=user.id,
+                external_user_id=result.external_user_id,
+                subscription_url=result.subscription_url,
+                location_code="all",
+                node_api_url=chosen.api_url,
+                duration_days=days,
+                panel_ends_at=result.ends_at,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            log.exception("admin_give_sub_db_failed", extra={"tg_id": tg_target, "plan": plan_code})
+            await message.answer(
+                "Доступ в Marzban выдан, но запись подписки в БД бота не сохранилась — исправьте вручную или повторите.",
+            )
+            return
+
+    pt = PLAN_MAP[plan_code]["title"]
+    adm_reply = (
+        f"✅ Выдан тариф <code>{html_escape.escape(plan_code)}</code> "
+        f"({html_escape.escape(str(days))} дн.) пользователю <code>{tg_target}</code>.\n"
+        f"Окончание (UTC): <code>{sub_row.ends_at}</code>\n"
+        f"{subscription_url_pre_block(sub_row.subscription_url)}"
+    )
+    await message.answer(adm_reply, parse_mode="HTML", disable_web_page_preview=True)
+
+    try:
+        await message.bot.send_message(
+            chat_id=tg_target,
+            text=(
+                "✅ Администратор выдал вам подписку.\n"
+                f"<b>{html_escape.escape(str(pt))}</b>\n"
+                f"{subscription_url_pre_block(sub_row.subscription_url)}\n\n"
+                "Ссылку можно снова открыть в «Мои подписки»."
+            ),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        log.warning("admin_give_sub_user_dm_failed", extra={"tg_id": tg_target})
 
 
 def _bc_confirm_kb() -> InlineKeyboardMarkup:
