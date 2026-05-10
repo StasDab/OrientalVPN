@@ -5,7 +5,11 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 
 from app.datetime_util import naive_utc_from_timestamp, utc_timestamp_after
-from app.services.node_registry import all_vless_inbound_tags_same_panel, marzban_provision_options
+from app.services.node_registry import (
+    all_vless_inbound_tags_same_panel,
+    marzban_provision_options,
+    pick_node_for_panel,
+)
 from app.services.server_selector import VpnNode
 
 
@@ -90,6 +94,19 @@ def _marzban_require_ok(response: httpx.Response) -> None:
     raise RuntimeError(
         f"Marzban API {response.status_code} {response.request.method} {response.url}: {body}"
     )
+
+
+def _finalize_marzban_subscription_url(raw_sub: str, panel_base: str) -> str:
+    """Один источник правды для строки подписки после ответа Marzban."""
+    subscription_url = _ensure_absolute_subscription_url(raw_sub, panel_base)
+    subscription_url = _public_subscription_url(subscription_url, panel_base)
+    from app.config import settings
+
+    subscription_url = _subscription_url_force_panel_host(subscription_url, settings.panel_url)
+    subscription_url = _subscription_url_replace_host(
+        subscription_url, settings.subscription_url_prefix
+    )
+    return subscription_url
 
 
 @dataclass
@@ -212,12 +229,7 @@ class MarzbanAdapter:
             user_data = get_r.json()
 
         raw_sub = _subscription_url_from_user_json(user_data)
-        subscription_url = _ensure_absolute_subscription_url(raw_sub, self.panel_url)
-        subscription_url = _public_subscription_url(subscription_url, self.panel_url)
-        subscription_url = _subscription_url_force_panel_host(subscription_url, settings.panel_url)
-        subscription_url = _subscription_url_replace_host(
-            subscription_url, settings.subscription_url_prefix
-        )
+        subscription_url = _finalize_marzban_subscription_url(raw_sub, self.panel_url)
         if not subscription_url:
             raise RuntimeError(
                 "Marzban не вернул subscription_url. На сервере Marzban в его .env задайте "
@@ -229,6 +241,104 @@ class MarzbanAdapter:
             subscription_url=subscription_url,
             ends_at=naive_utc_from_timestamp(expire_at),
         )
+
+    async def resync_subscription_inbounds(self, tg_id: int) -> str:
+        """
+        Обновить у tg_* список VLESS inbound как при новой выдаче (все узлы этой панели из vpn_nodes).
+        Дата истечения и proxies.vless сохраняются как в текущей записи Marzban при возможности.
+        """
+        username = f"tg_{tg_id}"
+        api_base = self.panel_url.rstrip("/")
+        node = pick_node_for_panel(self.panel_url)
+        if node is None:
+            raise RuntimeError(
+                "В vpn_nodes не найден узел для этой панели — проверьте api_url в vpn_nodes.json."
+            )
+
+        token = await self._get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(timeout=30) as client:
+            get_r = await client.get(f"{self.panel_url}/api/user/{username}", headers=headers)
+            if get_r.status_code == 404:
+                raise RuntimeError(
+                    "Пользователь не найден в панели Marzban — оформите доступ через бота заново.",
+                )
+            if get_r.status_code == 401:
+                self._token = None
+                token = await self._get_token()
+                headers = {"Authorization": f"Bearer {token}"}
+                get_r = await client.get(f"{self.panel_url}/api/user/{username}", headers=headers)
+            _marzban_require_ok(get_r)
+            data = get_r.json()
+
+        proxies = data.get("proxies")
+        if not isinstance(proxies, dict) or not proxies.get("vless"):
+            from app.config import settings as _cfg
+
+            inbound_tag, vless_settings = marzban_provision_options(node, node.location_code)
+            limit_ip = int(_cfg.marzban_vless_limit_ip or 0)
+            if limit_ip > 0:
+                vless_settings = {**vless_settings, "limitIp": limit_ip}
+            proxies = {"vless": vless_settings}
+
+        inbound_tag, _ = marzban_provision_options(node, node.location_code)
+        inbound_tags = all_vless_inbound_tags_same_panel(api_base)
+        if not inbound_tags:
+            inbound_tags = [inbound_tag]
+        if inbound_tag not in inbound_tags:
+            inbound_tags.append(inbound_tag)
+        inbound_tags = sorted(set(inbound_tags))
+
+        expire_raw = data.get("expire")
+        if expire_raw is None:
+            raise RuntimeError("Marzban: у пользователя нет поля expire.")
+
+        patch: dict[str, object] = {
+            "proxies": proxies,
+            "inbounds": {"vless": inbound_tags},
+            "expire": expire_raw,
+            "status": data.get("status") or "active",
+        }
+        note = data.get("note")
+        if note is not None:
+            patch["note"] = note
+        for key in ("data_limit", "data_limit_reset_strategy", "on_hold_timeout", "on_hold_expire_duration"):
+            if key in data and data[key] is not None:
+                patch[key] = data[key]
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            put_r = await client.put(
+                f"{self.panel_url}/api/user/{username}",
+                json=patch,
+                headers=headers,
+            )
+            if put_r.status_code == 401:
+                self._token = None
+                token = await self._get_token()
+                headers = {"Authorization": f"Bearer {token}"}
+                put_r = await client.put(
+                    f"{self.panel_url}/api/user/{username}",
+                    json=patch,
+                    headers=headers,
+                )
+            _marzban_require_ok(put_r)
+
+            get2 = await client.get(f"{self.panel_url}/api/user/{username}", headers=headers)
+            if get2.status_code == 401:
+                self._token = None
+                token = await self._get_token()
+                headers = {"Authorization": f"Bearer {token}"}
+                get2 = await client.get(f"{self.panel_url}/api/user/{username}", headers=headers)
+            _marzban_require_ok(get2)
+            user_data = get2.json()
+
+        raw_sub = _subscription_url_from_user_json(user_data)
+        subscription_url = _finalize_marzban_subscription_url(raw_sub, self.panel_url)
+        if not subscription_url:
+            raise RuntimeError(
+                "Marzban не вернул subscription_url после обновления. Проверьте XRAY_SUBSCRIPTION_URL_PREFIX и панель.",
+            )
+        return subscription_url
 
     async def get_user_share_links(self, external_username: str) -> list[str]:
         """Сырые vless/vmess ссылки из GET /api/user (поле links)."""

@@ -48,6 +48,7 @@ from app.keyboards.main import (
     profile_only_back_kb,
     promo_cancel_kb,
     subscriptions_back_kb,
+    subscriptions_manage_kb,
     topup_cancel_kb,
 )
 from app.payment_fulfillment import fulfill_paid_payment_row
@@ -65,6 +66,7 @@ from app.services.retry import with_retry
 from app.services.vpn_provider import MarzbanAdapter
 from app.services.yookassa import YookassaError, create_redirect_payment
 from app.states import PromoStates, TopupStates
+from app.subscription_urls import build_subscription_urls
 from app.telegram_format import (
     jammer_bypass_help_html,
     subscription_url_pre_block,
@@ -379,6 +381,11 @@ async def _build_subscription_lines(subs: list[Subscription]) -> list[str]:
             f"{subscription_url_pre_only(s.subscription_url)}"
         )
     return lines
+
+
+async def _subscriptions_screen_html(subs: list[Subscription]) -> str:
+    lines = await _build_subscription_lines(subs)
+    return subscriptions_list_intro_html() + "\n\n" + "\n\n".join(lines)
 
 
 @router.message(Command("start"))
@@ -958,13 +965,14 @@ async def profile_subs(call: CallbackQuery) -> None:
         await ack_callback(call, text="Откройте меню: /start", show_alert=True)
         return
     await ack_callback(call)
+    kb_subs = subscriptions_manage_kb(main_menu_origin=False)
     async with SessionLocal() as session:
         user = await get_user_by_tg_id(session, call.from_user.id)
         if not user:
             await nav_edit(
                 msg,
                 "Подписок пока нет. Используйте «Купить» или пробный период.",
-                subscriptions_back_kb(),
+                kb_subs,
                 parse_mode=None,
             )
             return
@@ -973,15 +981,131 @@ async def profile_subs(call: CallbackQuery) -> None:
         await nav_edit(
             msg,
             subscriptions_list_intro_html() + "\n\n<i>Активных подписок нет.</i>",
-            subscriptions_back_kb(),
+            kb_subs,
         )
         return
-    lines = await _build_subscription_lines(subs)
     await nav_edit(
         msg,
-        subscriptions_list_intro_html() + "\n\n" + "\n\n".join(lines),
-        subscriptions_back_kb(),
+        await _subscriptions_screen_html(subs),
+        kb_subs,
     )
+
+
+@router.callback_query(F.data.startswith("subs_refresh:"))
+async def callback_subscriptions_refresh(call: CallbackQuery) -> None:
+    """Синхронизировать inbounds в Marzban с текущими vpn_nodes; ссылка в тексте и в Happ обновятся."""
+    if not call.from_user:
+        await ack_callback(call)
+        return
+    msg = _callback_edit_target(call)
+    if not msg:
+        await ack_callback(call, text="Откройте меню: /start", show_alert=True)
+        return
+
+    parts = (call.data or "").split(":")
+    origin = parts[1] if len(parts) > 1 else "profile"
+    main_origin = origin == "menu"
+    if origin not in ("menu", "profile"):
+        await ack_callback(call, text="Неизвестное действие.", show_alert=True)
+        return
+
+    await ack_callback(call)
+
+    kb = subscriptions_manage_kb(main_menu_origin=main_origin)
+
+    async with SessionLocal() as session:
+        user = await get_user_by_tg_id(session, call.from_user.id)
+        if not user:
+            await nav_edit(msg, "Подписок пока нет.", kb, parse_mode=None)
+            return
+        subs = await list_active_subscriptions_for_user(session, user.id)
+        if not subs:
+            await nav_edit(
+                msg,
+                subscriptions_list_intro_html() + "\n\n<i>Активных подписок нет.</i>",
+                kb,
+            )
+            return
+
+        grouped: dict[tuple[str, str], list[Subscription]] = {}
+        my_tg = call.from_user.id
+        for sub in subs:
+            ext = (sub.external_user_id or "").strip()
+            if not ext.startswith("tg_"):
+                await nav_edit(
+                    msg,
+                    "Не удалось обновить: обратитесь в поддержку.",
+                    kb,
+                    parse_mode=None,
+                )
+                return
+            try:
+                tid = int(ext[3:])
+            except ValueError:
+                await nav_edit(
+                    msg,
+                    "Не удалось обновить: обратитесь в поддержку.",
+                    kb,
+                    parse_mode=None,
+                )
+                return
+            if tid != my_tg:
+                await nav_edit(
+                    msg,
+                    "Не удалось обновить: обратитесь в поддержку.",
+                    kb,
+                    parse_mode=None,
+                )
+                return
+            api_key = (sub.node_api_url or "").strip().rstrip("/")
+            key = (api_key, ext)
+            grouped.setdefault(key, []).append(sub)
+
+        marz_by_key: dict[tuple[str, str], str] = {}
+        try:
+            for (api_url_norm, ext_id) in grouped.keys():
+                tg_marz = int(ext_id[3:])
+                provider = MarzbanAdapter(
+                    panel_url=api_url_norm,
+                    username=settings.panel_username,
+                    password=settings.panel_password,
+                )
+                marz_by_key[(api_url_norm, ext_id)] = await with_retry(
+                    lambda p=provider, t=tg_marz: p.resync_subscription_inbounds(t),
+                    retries=settings.provision_retries,
+                    base_delay_seconds=1.0,
+                )
+
+            for sub in subs:
+                key = ((sub.node_api_url or "").strip().rstrip("/"), (sub.external_user_id or "").strip())
+                mr = marz_by_key.get(key)
+                if mr is None:
+                    continue
+                pub, upstream, gt, md = build_subscription_urls(mr, existing_gate_token=sub.sub_gate_token)
+                sub.subscription_url = pub
+                sub.upstream_subscription_url = upstream
+                sub.sub_gate_token = gt
+                sub.max_devices = md
+            await session.commit()
+        except RuntimeError as e:
+            await session.rollback()
+            err = html_escape.escape(str(e))
+            await nav_edit(msg, f"⚠️ Не удалось обновить подписку.\n{err}", kb, parse_mode=None)
+            return
+        except Exception:
+            await session.rollback()
+            log.exception("subs_refresh_failed", extra={"tg_id": my_tg})
+            await nav_edit(
+                msg,
+                "⚠️ Временная ошибка панели или сети. Попробуйте позже.",
+                kb,
+                parse_mode=None,
+            )
+            return
+
+    text = await _subscriptions_screen_html(subs)
+    text += "\n\n✅ <i>Список узлов в панели обновлён. В Happ нажмите обновление профиля подписки.</i>"
+    await nav_edit(msg, text, kb)
 
 
 @router.callback_query(F.data.startswith("plan:"))
@@ -1360,11 +1484,10 @@ async def callback_my(call: CallbackQuery) -> None:
             main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
         )
         return
-    lines = await _build_subscription_lines(subs)
     await nav_edit(
         msg,
-        subscriptions_list_intro_html() + "\n\n" + "\n\n".join(lines),
-        main_menu_kb(is_admin=_is_admin_user(call.from_user.id if call.from_user else None)),
+        await _subscriptions_screen_html(subs),
+        subscriptions_manage_kb(main_menu_origin=True),
     )
 
 
@@ -1385,7 +1508,11 @@ async def cmd_my(message: Message) -> None:
         return
     lines = await _build_subscription_lines(subs)
     await message.answer(
-        subscriptions_list_intro_html() + "\n\n" + "\n\n".join(lines),
+        subscriptions_list_intro_html()
+        + "\n\n"
+        + "\n\n".join(lines)
+        + "\n\n<i>Обновить список узлов (после добавления серверов): Профиль → Мои подписки → «Обновить подписку». "
+        "Затем обновите профиль в Happ.</i>",
         parse_mode="HTML",
         disable_web_page_preview=True,
     )

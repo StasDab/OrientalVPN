@@ -79,6 +79,24 @@ def subscriptions_back_kb() -> InlineKeyboardMarkup:
     )
 
 
+def subscriptions_manage_kb(*, main_menu_origin: bool) -> InlineKeyboardMarkup:
+    """Экран «Мои подписки» с синхронизацией узлов Marzban; main_menu_origin — откуда пришли (callback my)."""
+    suf = "menu" if main_menu_origin else "profile"
+    back = "menu_home" if main_menu_origin else "profile"
+    back_label = "🔙 В главное меню" if main_menu_origin else "🔙 Назад в профиль"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Обновить подписку",
+                    callback_data=f"subs_refresh:{suf}",
+                )
+            ],
+            [InlineKeyboardButton(text=back_label, callback_data=back)],
+        ]
+    )
+
+
 def topup_cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

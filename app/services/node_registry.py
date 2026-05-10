@@ -80,6 +80,23 @@ def pick_primary_node() -> VpnNode | None:
     return sorted(pool, key=lambda n: n.location_code.lower())[0]
 
 
+def pick_node_for_panel(panel_url: str) -> VpnNode | None:
+    """Любая нода из vpn_nodes с указанным api_url (та же логика здорового пула)."""
+    pu = (panel_url or "").rstrip("/").lower()
+    if not pu:
+        return None
+    match = [
+        n
+        for n in load_nodes()
+        if (n.api_url or "").rstrip("/").lower() == pu and n.is_healthy
+    ]
+    if not match:
+        match = [n for n in load_nodes() if (n.api_url or "").rstrip("/").lower() == pu]
+    if not match:
+        return None
+    return sorted(match, key=lambda n: n.location_code.lower())[0]
+
+
 def all_vless_inbound_tags_same_panel(panel_url: str) -> list[str]:
     """
     Все теги VLESS inbound с той же панели (`api_url`), что и переданная.
