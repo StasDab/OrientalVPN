@@ -1,7 +1,7 @@
 from pathlib import Path
 import json
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -67,12 +67,20 @@ class Settings(BaseSettings):
     subscription_max_devices: int = Field(default=2, ge=1, le=50, alias="SUBSCRIPTION_MAX_DEVICES")
     subscription_gate_listen_host: str = Field(default="0.0.0.0", alias="SUBSCRIPTION_GATE_LISTEN_HOST")
     subscription_gate_listen_port: int = Field(default=8095, ge=1, le=65535, alias="SUBSCRIPTION_GATE_LISTEN_PORT")
+    # Happ: см. https://www.happ.su/main/ru/dev-docs/app-management — в тело plaintext-подписки добавляются строки `#profile-update-interval:` и `#profile-title:`.
+    subscription_happ_profile_update_hours: int = Field(default=0, ge=0, le=168, alias="SUBSCRIPTION_HAPP_PROFILE_UPDATE_HOURS")
+    subscription_happ_profile_title: str = Field(default="", alias="SUBSCRIPTION_HAPP_PROFILE_TITLE")
     # Подменить только хост у /sub/... (отдельный домен подписки; nginx → Marzban).
     subscription_url_prefix: str = Field(default="", alias="SUBSCRIPTION_URL_PREFIX")
     # Необязательный баннер на /start (URL картинки/фото).
     start_banner_url: str = Field(default="", alias="START_BANNER_URL")
     # Необязательный локальный путь к баннеру на /start (абсолютный или относительно /opt/myvpn).
     start_banner_path: str = Field(default="", alias="START_BANNER_PATH")
+
+    @field_validator("subscription_happ_profile_title", mode="after")
+    @classmethod
+    def _happ_profile_title_max25(cls, v: str) -> str:
+        return (v or "").strip()[:25]
 
     @property
     def admin_id_set(self) -> set[int]:

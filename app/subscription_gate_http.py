@@ -27,6 +27,32 @@ def _client_fingerprint(request: web.Request) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _subscription_body_plaintext_upstream(raw: bytes, mime_major: str) -> bool:
+    if mime_major == "text/plain":
+        return True
+    head = raw.lstrip(b"\xef\xbb\xbf")[:384]
+    if head.startswith((b"vless://", b"vmess://", b"ss://", b"trojan://", b"hysteria2://", b"hy2://", b"#")):
+        return True
+    if b"vless://" in head or b"vmess://" in head:
+        return True
+    return False
+
+
+def _happ_directive_prefix_for_body(upstream_body: bytes) -> bytes:
+    """Строки в начале plaintext-подписки для Happ (автообновление и имя профиля)."""
+    hrs = int(settings.subscription_happ_profile_update_hours or 0)
+    title = (settings.subscription_happ_profile_title or "").strip()
+    probe = upstream_body.lstrip(b"\xef\xbb\xbf")[:8192].decode("utf-8", errors="replace").lower()
+    lines: list[str] = []
+    if hrs >= 1 and "profile-update-interval" not in probe:
+        lines.append(f"#profile-update-interval: {hrs}")
+    if title and "profile-title" not in probe:
+        lines.append(f"#profile-title: {title}")
+    if not lines:
+        return b""
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
 def _split_content_type_for_aiohttp(raw: str | None) -> tuple[str, str | None]:
     """
     aiohttp.web.Response не принимает charset внутри content_type (ValueError).
@@ -111,9 +137,14 @@ async def _handle_subscription_gate_impl(request: web.Request) -> web.StreamResp
         raise web.HTTPBadGateway(text="Временно не удалось получить подписку.")
 
     mime, charset = _split_content_type_for_aiohttp(resp.headers.get("content-type"))
+    body = resp.content
+    prefix = _happ_directive_prefix_for_body(body)
+    if prefix and _subscription_body_plaintext_upstream(body, mime):
+        body = prefix + body
+
     return web.Response(
         status=resp.status_code,
-        body=resp.content,
+        body=body,
         content_type=mime,
         charset=charset,
     )

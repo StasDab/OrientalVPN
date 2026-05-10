@@ -18,6 +18,7 @@
 | `infra/` | Docker Compose, пример systemd, пример nginx |
 | `scripts/` | Утилиты обслуживания (см. ниже) |
 | `vpn_nodes.json` (опц.) | Список нод Marzban: подхватывается автоматически, если **`VPN_NODES_JSON` в `.env` пуст или битый** (типично при многострочном JSON). Шаблон: `vpn_nodes.json.example`. |
+| `docs/MARZBAN_EXTRA_NODE_SETUP.md` | Пошагово: второй VPS (Marzban Node), сертификат, порты, inbound, **`vpn_nodes.json`**, Happ (флаги, автообновление через шлюз). |
 
 ## Быстрый старт (локально)
 
