@@ -141,7 +141,13 @@ async def _handle_subscription_gate_impl(request: web.Request) -> web.StreamResp
                     .where(SubscriptionDevice.subscription_id == sub.id)
                 )
                 n = int(cnt or 0)
-                if n >= int(sub.max_devices or 2):
+                # Лимит при выдаче подписки пишется в sub.max_devices; поднять его через .env
+                # без продления подписки иначе нельзя. Берём max с настройкой — см. SUBSCRIPTION_MAX_DEVICES.
+                effective_max = max(
+                    int(sub.max_devices or 2),
+                    int(settings.subscription_max_devices),
+                )
+                if n >= effective_max:
                     raise web.HTTPForbidden(
                         text="Достигнут лимит устройств по этой ссылке.",
                     )
