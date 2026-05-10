@@ -27,15 +27,44 @@ def _client_fingerprint(request: web.Request) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _subscription_body_plaintext_upstream(raw: bytes, mime_major: str) -> bool:
-    if mime_major == "text/plain":
-        return True
-    head = raw.lstrip(b"\xef\xbb\xbf")[:384]
-    if head.startswith((b"vless://", b"vmess://", b"ss://", b"trojan://", b"hysteria2://", b"hy2://", b"#")):
-        return True
-    if b"vless://" in head or b"vmess://" in head:
-        return True
-    return False
+def _subscription_body_plaintext_uri_list(raw: bytes) -> bool:
+    """
+    Директивы Happ (#profile-...) добавлять только перед классической plaintext-подпиской со схемами URI.
+    Если вставить их перед JSON/YAML/Clash, клиент может выдать «нет ссылок» (Happ error 39).
+    """
+    stem = raw.lstrip(b"\xef\xbb\xbf").lstrip()
+    if not stem:
+        return False
+    if stem.startswith(
+        (
+            b"{",
+            b"[",
+            b"port:",
+            b"proxies:",
+            b"proxy-groups:",
+            b"%YAML",
+            b"rules:",
+            b"mixed-port:",
+        )
+    ):
+        return False
+    window = stem[:8192]
+    return bool(
+        window.startswith(
+            (
+                b"vless://",
+                b"vmess://",
+                b"ss://",
+                b"trojan://",
+                b"hysteria2://",
+                b"hy2://",
+                b"#",
+            )
+        )
+        or b"vless://" in window
+        or b"vmess://" in window
+        or (b"hysteria2://" in window or b"hy2://" in window or b"trojan://" in window or b"ss://" in window)
+    )
 
 
 def _happ_directive_prefix_for_body(upstream_body: bytes) -> bytes:
@@ -139,14 +168,21 @@ async def _handle_subscription_gate_impl(request: web.Request) -> web.StreamResp
     mime, charset = _split_content_type_for_aiohttp(resp.headers.get("content-type"))
     body = resp.content
     prefix = _happ_directive_prefix_for_body(body)
-    if prefix and _subscription_body_plaintext_upstream(body, mime):
+    if prefix and _subscription_body_plaintext_uri_list(body):
         body = prefix + body
+
+    extra: dict[str, str] = {}
+    for hk in ("subscription-userinfo", "support-url"):
+        hv = resp.headers.get(hk)
+        if hv:
+            extra[hk] = hv
 
     return web.Response(
         status=resp.status_code,
         body=body,
         content_type=mime,
         charset=charset,
+        **({"headers": extra} if extra else {}),
     )
 
 
