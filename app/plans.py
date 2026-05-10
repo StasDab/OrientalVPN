@@ -14,16 +14,17 @@ PLAN_MAP: dict[str, dict[str, Any]] = {
     "12m": {"title": "OrientalVPN · 365 дней", "amount": 170000, "days": 365},
 }
 
+# Подпись в боте (напоминания, «Мои подписки»). В Happ названия узлов — из remark inbound в Marzban; держите текст в одном стиле (флаги там тоже).
 LOCATION_TITLES: dict[str, str] = {
-    "all": "Все серверы",
-    "de": "Germany",
-    "nl": "Netherlands",
-    "se": "EU — Stockholm",
-    "eu_se": "EU — Stockholm",
-    "fi": "Finland",
-    "fi_hel": "Finland — Helsinki",
-    "us": "USA — Charlotte (Sharlott)",
-    "us_nc": "USA — Charlotte (Sharlott)",
+    "all": "🌍 Все серверы",
+    "de": "🇩🇪 Germany",
+    "nl": "🇳🇱 Netherlands",
+    "se": "🇸🇪 Stockholm (EU)",
+    "eu_se": "🇸🇪 Stockholm (EU)",
+    "fi": "🇫🇮 Finland",
+    "fi_hel": "🇫🇮 Finland — Helsinki",
+    "us": "🇺🇸 USA — Charlotte",
+    "us_nc": "🇺🇸 USA — Charlotte",
 }
 
 
