@@ -31,8 +31,8 @@
 ### Баннер на /start
 
 - Через URL: задайте `START_BANNER_URL=https://.../banner.png`.
-- Через локальный файл: задайте `START_BANNER_PATH=/opt/myvpn/assets/start-banner.png`.
-- В репозитории есть готовый файл: `assets/start-banner.png`.
+- Через локальный файл: задайте `START_BANNER_PATH=/opt/myvpn/assets/start-banner.jpg`.
+- В репозитории есть готовый файл: `assets/start-banner.jpg`.
 
 ## Миграции
 
