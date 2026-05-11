@@ -1339,6 +1339,13 @@ async def _run_trial(message: Message, tg_user) -> None:
         if user.trial_used:
             await message.answer("Пробный период уже использован.")
             return
+        if await list_active_subscriptions_for_user(session, user.id):
+            await message.answer(
+                "У вас уже есть <b>активная подписка</b>. Пробный период не выдаётся поверх неё — "
+                "откройте «Мои подписки» (/my).",
+                parse_mode="HTML",
+            )
+            return
 
     if not available_location_codes():
         _log_vpn_nodes_unavailable("trial_no_locations")
@@ -1357,6 +1364,13 @@ async def _run_trial(message: Message, tg_user) -> None:
         user = await get_or_create_user(session, tg_id=tg_user.id, username=tg_user.username)
         if user.trial_used:
             await message.answer("Пробный период уже использован.")
+            return
+        if await list_active_subscriptions_for_user(session, user.id):
+            await message.answer(
+                "У вас уже есть <b>активная подписка</b>. Пробный период не выдаётся поверх неё — "
+                "откройте «Мои подписки» (/my).",
+                parse_mode="HTML",
+            )
             return
 
         provider = MarzbanAdapter(
@@ -1424,6 +1438,13 @@ async def callback_trial(call: CallbackQuery) -> None:
         if user and user.trial_used:
             await ack_callback(call, text="Пробный период уже использован.", show_alert=True)
             return
+        if user and await list_active_subscriptions_for_user(session, user.id):
+            await ack_callback(
+                call,
+                text="Уже есть активная подписка. Пробный период к ней не добавляется — «Мои подписки».",
+                show_alert=True,
+            )
+            return
 
     await ack_callback(call)
     await nav_edit(
@@ -1442,6 +1463,12 @@ async def cmd_trial(message: Message) -> None:
         user = await get_user_by_tg_id(session, message.from_user.id)
         if user and user.trial_used:
             await message.answer("Пробный период уже использован.")
+            return
+        if user and await list_active_subscriptions_for_user(session, user.id):
+            await message.answer(
+                "У вас уже есть активная подписка. Пробный период не выдаётся поверх неё — "
+                "откройте «Мои подписки» (/my).",
+            )
             return
     await _run_trial(message, message.from_user)
 
