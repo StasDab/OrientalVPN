@@ -19,11 +19,31 @@ log = logging.getLogger(__name__)
 _gateway_runner: web.AppRunner | None = None
 
 
-def _client_fingerprint(request: web.Request) -> str:
+def _client_ip_for_gate(request: web.Request) -> str:
+    """Первый hop из X-Forwarded-For (nginx) либо адрес сокета."""
     fwd = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-    host = fwd or (request.remote or "")
-    ua = request.headers.get("User-Agent") or ""
-    raw = f"{host}\0{ua}".encode("utf-8", errors="replace")
+    return fwd or (request.remote or "")
+
+
+def _client_fingerprint(request: web.Request) -> str:
+    """
+    Идентификация «устройства» для лимита.
+
+    По умолчанию только IP: клиенты вроде Happ меняют User-Agent между запросами,
+    из-за чего каждое обновление подписки выглядело как новое устройство → 403 и нет
+    заголовка subscription-userinfo (трафик/лимит в UI).
+    SUBSCRIPTION_GATE_FINGERPRINT_USE_UA=true — прежняя схема IP+UA (строже к раздаче ссылки).
+    """
+    ip = _client_ip_for_gate(request).strip()
+    if settings.subscription_gate_fingerprint_use_ua:
+        ua = request.headers.get("User-Agent") or ""
+        raw = f"{ip}\0{ua}".encode("utf-8", errors="replace")
+    elif ip:
+        raw = ip.encode("utf-8", errors="replace")
+    else:
+        # Нет IP в запросе (редко) — не схлопываем всех в один хеш.
+        ua = request.headers.get("User-Agent") or ""
+        raw = f"\0{ua}".encode("utf-8", errors="replace")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -174,8 +194,18 @@ async def _handle_subscription_gate_impl(request: web.Request) -> web.StreamResp
     if prefix and _subscription_body_plaintext_uri_list(body):
         body = prefix + body
 
+    # Заголовки Marzban для клиентов (Happ, v2raytun и т.д.): трафик, срок, название профиля.
+    # httpx сопоставляет имена без учёта регистра.
+    _SUBSCRIPTION_PASS_THROUGH_HEADERS = (
+        "subscription-userinfo",
+        "support-url",
+        "profile-title",
+        "profile-update-interval",
+        "profile-web-page-url",
+        "announcement",
+    )
     extra: dict[str, str] = {}
-    for hk in ("subscription-userinfo", "support-url"):
+    for hk in _SUBSCRIPTION_PASS_THROUGH_HEADERS:
         hv = resp.headers.get(hk)
         if hv:
             extra[hk] = hv

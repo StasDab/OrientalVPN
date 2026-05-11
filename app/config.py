@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     # Шлюз подписки: публичный URL с /sub/{uuid} (HTTPS за nginx), бот слушает SUBSCRIPTION_GATE_LISTEN_*.
     subscription_gate_public_base: str = Field(default="", alias="SUBSCRIPTION_GATE_PUBLIC_BASE")
     subscription_max_devices: int = Field(default=2, ge=1, le=50, alias="SUBSCRIPTION_MAX_DEVICES")
+    # True = старый отпечаток IP+User-Agent (строже). False = только IP: Happ/iOS меняют UA → иначе 403 и нет subscription-userinfo.
+    subscription_gate_fingerprint_use_ua: bool = Field(default=False, alias="SUBSCRIPTION_GATE_FINGERPRINT_USE_UA")
     subscription_gate_listen_host: str = Field(default="0.0.0.0", alias="SUBSCRIPTION_GATE_LISTEN_HOST")
     subscription_gate_listen_port: int = Field(default=8095, ge=1, le=65535, alias="SUBSCRIPTION_GATE_LISTEN_PORT")
     # Happ: см. https://www.happ.su/main/ru/dev-docs/app-management — в тело plaintext-подписки добавляются строки `#profile-update-interval:` и `#profile-title:`.
